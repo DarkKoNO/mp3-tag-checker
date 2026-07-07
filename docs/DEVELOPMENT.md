@@ -115,6 +115,29 @@ Defined in `mp3lib/db.py`:
    enable/postpone/disable it.
 5. Cover it in `dev/smoke_test.py` or `dev/regress_test.py`.
 
+## Releasing a new version
+
+The auto-updater (`mp3lib/updater.py`) compares the local `version.json`
+with the one on the `main` branch and installs the main-branch ZIP, so
+**pushing to `main` with a raised version number IS the release**:
+
+1. Add a new entry at the **top** of the `changelog` list in `version.json`
+   (version, date, user-facing bullet points) and set the top-level
+   `"version"` to the same number. Users see these bullets in the update
+   popup and in Settings → Updates — write them for users, not developers.
+2. Commit and push to `main` together with the code.
+
+Notes:
+
+- Until the version number rises, pushed commits are invisible to the
+  updater — pushing work-in-progress is safe, but users who update *after*
+  the version bump get whatever `main` holds at that moment.
+- The update never deletes files and never touches gitignored user data;
+  renamed/removed files simply linger in old installations, so prefer
+  backward-compatible layouts.
+- Changed `requirements.txt` is handled automatically: `run.bat` reinstalls
+  dependencies on the restart after the update.
+
 ## Development tools and tests (`dev/`)
 
 Run everything with the project's venv, from the repository root:

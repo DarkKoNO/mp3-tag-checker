@@ -1,0 +1,21 @@
+{
+  "version": "1.1.0",
+  "changelog": [
+    {
+      "version": "1.1.0",
+      "date": "2026-07-07",
+      "changes": [
+        "Auto-update: the app checks GitHub for new versions at startup (can be turned off) and offers to install them.",
+        "New 'Updates' tab in Settings: installed version, manual update check, what's new in each version, one-click update.",
+        "Updating downloads the new version, installs it and restarts the app; your settings, libraries and databases are never touched."
+      ]
+    },
+    {
+      "version": "1.0.0",
+      "date": "2026-07-07",
+      "changes": [
+        "Initial release: library scanning, rule engine, review-and-apply workflow, tag history with revert, multi-condition search, online metadata on demand, themes and translatable field labels."
+      ]
+    }
+  ]
+}

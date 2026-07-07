@@ -48,6 +48,10 @@ Jakub Konopásek.
 - **Multiple libraries**, each with its own root folder and database.
 - Light/Dark/custom **themes** and translatable field labels (Czech set
   included).
+- **Auto-update**: checks GitHub for new versions at startup (optional),
+  shows what's new, and updates + restarts itself on one click — your
+  settings and databases are never touched. Manual check and update live
+  in *Settings → Updates*.
 
 ## Quick start
 

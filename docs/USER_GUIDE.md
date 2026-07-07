@@ -128,8 +128,26 @@ Highlights:
   (colors and fonts) in the theme editor.
 - **Field labels** — the names shown for tag fields; a Czech set ships with
   the app and you can define your own.
+- **Updates** — see the next section.
 
-## 10. Files the app creates
+## 10. Updates
+
+The app updates itself from GitHub:
+
+- At startup it quietly checks whether a newer version exists (turn this
+  off in **Settings → Updates** if you prefer). When one does, a window
+  shows **what's new** and offers *Update now*, *Remind me later*, or *Skip
+  this version* (skipping silences the popup for that version only).
+- **Settings → Updates** shows the installed version and its changelog, and
+  has a **Check for updates now** button — when a new version is found, its
+  release notes appear and a **Download and install…** button starts the
+  update by hand, any time.
+- Updating downloads the new version, closes the app, installs the files
+  and restarts it automatically. Your personal files — settings, libraries,
+  scan databases, themes — are never part of an update and stay untouched.
+  If new dependencies are required, `run.bat` installs them on the restart.
+
+## 11. Files the app creates
 
 All of these live next to `run.bat` and are personal — they are not part of
 the repository:
@@ -143,7 +161,7 @@ the repository:
 | `error.log` | details of any unexpected error |
 | `.venv\` | the Python environment built by `run.bat` |
 
-## 11. Troubleshooting
+## 12. Troubleshooting
 
 - **The app doesn't start / closes immediately** — open `error.log`. If it
   mentions *"DLL load failed"* or *shiboken*, install the [Microsoft Visual

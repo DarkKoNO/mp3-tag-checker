@@ -287,6 +287,9 @@ DEFAULT_SETTINGS = {
     "history_keep": 10,           # tag versions kept per track
     # display
     "multi_sep": "; ",            # how multi-value fields are shown/edited in the GUI
+    # auto-update (Settings - Updates)
+    "auto_update_check": True,    # check GitHub for a new version at startup
+    "skipped_version": "",        # version the user chose to skip in the popup
 }
 
 _LEGACY_KEYS = {"folders_txt": "folders.txt", "mp3_root": ""}

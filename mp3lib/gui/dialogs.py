@@ -3,7 +3,7 @@
 import json
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtGui import QColor, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout,
@@ -657,6 +657,9 @@ class SettingsPane(QWidget):
         rlay.addWidget(rscroll, 1)
         tabs.addTab(rtab, "Problem types")
 
+        # --- Updates tab (version check + self-update)
+        self._build_updates_tab(tabs, s)
+
         bottom = QHBoxLayout()
         self.reeval = QCheckBox("Re-evaluate all rules after saving")
         self.reeval.setChecked(True)
@@ -1056,6 +1059,87 @@ class SettingsPane(QWidget):
         self._reload_flabel_combo(select="English")
         self._flabels_selected()
 
+    # ------------------------------------------------------------ updates ---
+
+    def _build_updates_tab(self, tabs, s):
+        from PySide6.QtWidgets import QTextBrowser
+        from .. import updater
+        self._upd_info = None       # last successful check with an update
+        self._upd_thread = None
+        utab = QWidget()
+        ulay = QVBoxLayout(utab)
+        head = QFormLayout()
+        head.addRow("Installed version:",
+                    QLabel("<b>%s</b>" % updater.local_version()))
+        ulay.addLayout(head)
+        c = QCheckBox("Check for updates at startup (a popup appears only"
+                      " when a new version exists)")
+        c.setChecked(bool(s.get("auto_update_check", True)))
+        self.w["auto_update_check"] = c
+        ulay.addWidget(c)
+        skipped = s.get("skipped_version", "")
+        if skipped:
+            note = QLabel("<i>The startup popup currently skips version %s"
+                          " ('Skip this version'). A manual check here always"
+                          " reports it.</i>" % skipped)
+            note.setWordWrap(True)
+            ulay.addWidget(note)
+        row = QHBoxLayout()
+        self.upd_check_btn = QPushButton("Check for updates now")
+        self.upd_check_btn.clicked.connect(self._check_updates_now)
+        row.addWidget(self.upd_check_btn)
+        self.upd_install_btn = QPushButton("Download and install…")
+        self.upd_install_btn.setVisible(False)
+        self.upd_install_btn.clicked.connect(
+            lambda: run_update_flow(self, self._upd_info))
+        row.addWidget(self.upd_install_btn)
+        self.upd_status = QLabel("")
+        self.upd_status.setWordWrap(True)
+        row.addWidget(self.upd_status, 1)
+        ulay.addLayout(row)
+        self.upd_notes = QTextBrowser()
+        self.upd_notes.setOpenExternalLinks(True)
+        self.upd_notes.setHtml(
+            "<h3>Version history (installed)</h3>"
+            + format_changelog(updater.read_local().get("changelog") or []))
+        ulay.addWidget(self.upd_notes, 1)
+        src = QLabel(
+            'Updates come from <a href="%s">%s</a>. Updating downloads the'
+            " new version, installs it and restarts the app — your settings,"
+            " libraries and scan databases are never touched."
+            % (updater.REPO_URL, updater.GITHUB_REPO))
+        src.setOpenExternalLinks(True)
+        src.setWordWrap(True)
+        ulay.addWidget(src)
+        tabs.addTab(utab, "Updates")
+
+    def _check_updates_now(self):
+        self.upd_check_btn.setEnabled(False)
+        self.upd_status.setText("Checking GitHub…")
+        self._upd_thread = UpdateCheckThread(self)
+        self._upd_thread.done.connect(self._update_check_finished)
+        self._upd_thread.start()
+
+    def _update_check_finished(self, result):
+        self.upd_check_btn.setEnabled(True)
+        if result.get("error"):
+            self.upd_status.setText("The check failed: %s" % result["error"])
+            return
+        if not result.get("update"):
+            self.upd_status.setText(
+                "You have the newest version (%s)." % result["local"])
+            self.upd_install_btn.setVisible(False)
+            return
+        self._upd_info = result
+        self.upd_status.setText(
+            "<b>New version %s is available</b> (you have %s)."
+            % (result["version"], result["local"]))
+        self.upd_install_btn.setText(
+            "Download and install version %s…" % result["version"])
+        self.upd_install_btn.setVisible(True)
+        self.upd_notes.setHtml("<h3>What's new</h3>"
+                               + format_changelog(result["notes"]))
+
     def _reset_layout(self):
         self.cfg["settings"]["ui_layout"] = {}
         save_config(self.cfg)
@@ -1169,6 +1253,141 @@ class SettingsPane(QWidget):
         self.owner.detail.refresh()
         self.owner.statusBar().showMessage("Settings saved." + (
             " Rules re-evaluated." if self.reeval.isChecked() else ""))
+
+
+# ---------------------------------------------------------------- updates ---
+
+class UpdateCheckThread(QThread):
+    """Asks GitHub for the newest version without blocking the GUI."""
+    done = Signal(object)   # updater.check_for_update() result or {'error':...}
+
+    def run(self):
+        from .. import updater
+        try:
+            self.done.emit(updater.check_for_update())
+        except Exception as e:
+            self.done.emit({"error": "%s" % e})
+
+
+class _DownloadThread(QThread):
+    """Downloads + extracts the update ZIP in the background."""
+    progress = Signal(int, int)     # done bytes, total bytes (0 = unknown)
+    done = Signal(object)           # {'dir': extracted path} or {'error':...}
+
+    def run(self):
+        from .. import updater
+        try:
+            d = updater.download_update(
+                lambda a, b: self.progress.emit(a, b))
+            self.done.emit({"dir": d})
+        except Exception as e:
+            self.done.emit({"error": "%s" % e})
+
+
+def format_changelog(entries):
+    """version.json changelog entries -> simple HTML."""
+    import html
+    parts = []
+    for e in entries or []:
+        if not isinstance(e, dict):
+            continue
+        head = "Version %s" % html.escape(str(e.get("version", "?")))
+        if e.get("date"):
+            head += " &nbsp;—&nbsp; %s" % html.escape(str(e["date"]))
+        items = "".join("<li>%s</li>" % html.escape(str(c))
+                        for c in e.get("changes") or [])
+        parts.append("<p><b>%s</b></p><ul>%s</ul>" % (head, items))
+    return "".join(parts) or "<p><i>No changelog available.</i></p>"
+
+
+class UpdateDialog(QDialog):
+    """Startup popup for a new version. After exec(), .choice holds what the
+    user picked: 'update' | 'later' | 'skip'."""
+
+    def __init__(self, info, parent=None):
+        super().__init__(parent)
+        from PySide6.QtWidgets import QTextBrowser
+        self.choice = "later"
+        self.setWindowTitle("Update available")
+        self.resize(640, 460)
+        lay = QVBoxLayout(self)
+        lay.addWidget(QLabel(
+            "<b>A new version of MP3 Tag Checker is available: %s</b>"
+            " &nbsp;(you have %s)" % (info["version"], info["local"])))
+        notes = QTextBrowser()
+        notes.setHtml("<h3>What's new</h3>" + format_changelog(info["notes"]))
+        lay.addWidget(notes, 1)
+        info_lbl = QLabel(
+            "Updating downloads the new version, installs it and restarts"
+            " the app. Your settings, libraries and scan databases are kept.")
+        info_lbl.setWordWrap(True)
+        lay.addWidget(info_lbl)
+        btns = QHBoxLayout()
+        up = QPushButton("Update now")
+        up.setDefault(True)
+        up.clicked.connect(lambda: self._pick("update"))
+        later = QPushButton("Remind me later")
+        later.setToolTip("Ask again the next time the app starts")
+        later.clicked.connect(lambda: self._pick("later"))
+        skip = QPushButton("Skip this version")
+        skip.setToolTip("Don't show this popup again for version %s — it"
+                        " reappears for the next version. You can still"
+                        " update any time in Settings → Updates."
+                        % info["version"])
+        skip.clicked.connect(lambda: self._pick("skip"))
+        btns.addWidget(up)
+        btns.addStretch(1)
+        btns.addWidget(later)
+        btns.addWidget(skip)
+        lay.addLayout(btns)
+
+    def _pick(self, choice):
+        self.choice = choice
+        self.accept()
+
+
+def run_update_flow(parent, info=None):
+    """Download the update, hand over to the restart script and quit the
+    app. Used by both the startup popup and Settings → Updates."""
+    from PySide6.QtWidgets import QApplication, QProgressDialog
+    from .. import updater
+    dlg = QProgressDialog("Downloading the new version…", "", 0, 0, parent)
+    dlg.setWindowTitle("Updating")
+    dlg.setWindowModality(Qt.WindowModal)
+    dlg.setCancelButton(None)
+    dlg.setMinimumDuration(0)
+    dlg.setMinimumWidth(420)
+    dlg.show()
+    th = _DownloadThread(parent)
+
+    def on_progress(done, total):
+        if total:
+            dlg.setMaximum(total)
+            dlg.setValue(done)
+        dlg.setLabelText("Downloading the new version…  %.1f MB"
+                         % (done / 1048576.0))
+
+    def on_done(result):
+        dlg.close()
+        if result.get("error"):
+            QMessageBox.critical(
+                parent, "Update failed",
+                "The update could not be downloaded:\n\n%s\n\n"
+                "Nothing was changed. You can try again later or download"
+                " the new version manually from\n%s"
+                % (result["error"], updater.REPO_URL))
+            return
+        QMessageBox.information(
+            parent, "Installing update",
+            "The application now closes to install the update and restarts"
+            " itself in a few seconds.")
+        updater.apply_update_and_restart(result["dir"])
+        QApplication.instance().quit()
+
+    th.progress.connect(on_progress)
+    th.done.connect(on_done)
+    parent._upd_download_thread = th    # keep a reference while it runs
+    th.start()
 
 
 class ChangelogPane(QWidget):

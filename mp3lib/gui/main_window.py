@@ -4,7 +4,7 @@ action bar (library, scan, apply, internet), and the library tree views."""
 from collections import defaultdict
 from pathlib import Path
 
-from PySide6.QtCore import QSortFilterProxyModel, Qt
+from PySide6.QtCore import QSortFilterProxyModel, Qt, QTimer
 from PySide6.QtGui import QStandardItem, QStandardItemModel
 from PySide6.QtWidgets import (
     QAbstractItemView, QButtonGroup, QCheckBox, QComboBox, QFrame, QHBoxLayout,
@@ -16,11 +16,13 @@ from .. import applier, db, online, scanner
 from ..rules import (IMAGE_RULES, RULE_SEVERITY, is_non_fixable,
                      missing_field_of, rule_description, rule_label)
 from ..settings import active_library, lib_db_path, save_config
+from ..updater import local_version
 from .common import (SEV_RANK, Worker, dot_icon, enable_copy, field_label,
                      persist_header, persist_splitter, worse)
 from .detail_panel import DetailPanel
 from .dialogs import (ChangelogPane, LibrariesDialog, ScanDialog, SearchPane,
-                      SettingsPane)
+                      SettingsPane, UpdateCheckThread, UpdateDialog,
+                      run_update_flow)
 
 KIND_ROLE = Qt.UserRole + 1
 KEY_ROLE = Qt.UserRole + 2
@@ -47,7 +49,7 @@ class MainWindow(QMainWindow):
         self.con = db.connect(lib_db_path(self.lib) if self.lib else ":memory:")
         self.worker = None
         self._lib_widgets = []      # disabled while no library exists
-        self.setWindowTitle("MP3 Tag Checker")
+        self.setWindowTitle("MP3 Tag Checker %s" % local_version())
         self.resize(1500, 900)
 
         central = QWidget()
@@ -262,6 +264,32 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(
             "Ready." if self.lib else
             "No library yet — click 'Libraries…' and add one.")
+
+        # auto-update: quietly ask GitHub for a newer version once the window
+        # is up; a popup appears only when there is one (Settings — Updates)
+        if self.cfg["settings"].get("auto_update_check", True):
+            QTimer.singleShot(2000, self._startup_update_check)
+
+    # ------------------------------------------------------------ updates ---
+
+    def _startup_update_check(self):
+        self._upd_check = UpdateCheckThread(self)
+        self._upd_check.done.connect(self._startup_update_result)
+        self._upd_check.start()
+
+    def _startup_update_result(self, result):
+        # the startup check is silent unless there really is a new version
+        if result.get("error") or not result.get("update"):
+            return
+        if result["version"] == self.cfg["settings"].get("skipped_version", ""):
+            return
+        dlg = UpdateDialog(result, self)
+        dlg.exec()
+        if dlg.choice == "update":
+            run_update_flow(self, result)
+        elif dlg.choice == "skip":
+            self.cfg["settings"]["skipped_version"] = result["version"]
+            save_config(self.cfg)
 
     def _update_lib_enabled(self):
         """Gray out the library-dependent parts while no library exists."""
