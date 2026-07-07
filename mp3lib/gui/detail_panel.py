@@ -31,6 +31,10 @@ ALBUM_EXCLUDE = {"title", "track"}
 PSEUDO_LABEL = {"_id3v1": "old ID3v1 tag", "_version": "ID3 version",
                 "folder_jpg": "folder.jpg", "cover": "album cover"}
 
+# shown in 'Proposed' when the change removes the field's value entirely
+# (a proposal whose new value is empty); applying it deletes the tag frame
+CLEAR_MARKER = "‹remove value›"
+
 
 def entry_tip(e):
     """Hover text for an entry row: its specific note (if any) followed by
@@ -363,6 +367,9 @@ class DetailPanel(QWidget):
                                                  field_label(e["field"]))
                     cur_txt = join_vals(e["current"], self.sep())
                     proposed_txt = join_vals(e["proposed"], self.sep())
+                    if (not e["proposed"] and e["status"] != "needs_input"
+                            and e["field"] in tagio.EDITABLE_FIELDS):
+                        proposed_txt = CLEAR_MARKER   # empty new value = Clear
                     if e.get("rule") == "id3v1_conflict":
                         cur_txt += "   (ID3v2 — current)"
                         proposed_txt += "   (old ID3v1)"
@@ -724,8 +731,8 @@ class DetailPanel(QWidget):
         pending_edits = getattr(self, "_album_pending_edits", {})
         self._album_pending_edits = {}
         left_head.addWidget(self._album_prop_header)
-        table = QTableWidget(len(album_fields), 4)
-        table.setHorizontalHeaderLabels(["Field", "Current", "Proposed", ""])
+        table = QTableWidget(len(album_fields), 5)
+        table.setHorizontalHeaderLabels(["Field", "Current", "Proposed", "", ""])
         table.verticalHeader().setVisible(False)
         table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self._album_field_rows = album_fields
@@ -733,12 +740,17 @@ class DetailPanel(QWidget):
         for r, field in enumerate(album_fields):
             vals = {join_vals(snaps[tid].get(field, []), self.sep()) for tid in snaps}
             cur = vals.pop() if len(vals) == 1 else "«varies»"
+            has_val = any(snaps[tid].get(field) for tid in snaps)
             props = self.con.execute(
                 "SELECT proposed FROM proposals WHERE album_dir=? AND field=?"
                 " AND status IN ('pending','edited') AND track_id IS NOT NULL",
                 (adir, field)).fetchall()
             pvals = {join_vals(json.loads(p[0]), self.sep()) for p in props}
             proposed = pvals.pop() if len(pvals) == 1 else ("«varies»" if pvals else "")
+            # a proposal exists but its new value is empty = the value is
+            # set to be removed (Clear); the box stays empty so typing a
+            # replacement needs no deleting first
+            is_clear = bool(props) and not proposed
             it0 = QTableWidgetItem(field_label(field))
             it0.setFont(bold)
             it0.setFlags(it0.flags() & ~Qt.ItemIsEditable)
@@ -748,11 +760,19 @@ class DetailPanel(QWidget):
             table.setItem(r, 0, it0)
             table.setItem(r, 1, it1)
             edit = QLineEdit(proposed)
-            edit.setPlaceholderText("(no change)")
-            edit.setToolTip(
-                "Write the new value, then press Enter or click Add — nothing"
-                " is stored until you do. Confirming the current value (or an"
-                " emptied box) removes the proposed change again.")
+            if is_clear:
+                edit.setPlaceholderText(CLEAR_MARKER + " — type here to write"
+                                        " a new value instead")
+                edit.setToolTip(
+                    "The current value is set to be removed (Clear). Type a"
+                    " value and press Enter to write that instead, or press"
+                    " Enter on the empty box to cancel the removal.")
+            else:
+                edit.setPlaceholderText("(no change)")
+                edit.setToolTip(
+                    "Write the new value, then press Enter or click Add — nothing"
+                    " is stored until you do. Confirming the current value (or an"
+                    " emptied box) removes the proposed change again.")
             edit.returnPressed.connect(
                 lambda f=field, a=adir: self._album_field_edited(a, f))
             self._album_edits[field] = edit
@@ -767,6 +787,23 @@ class DetailPanel(QWidget):
                 lambda _t, f=field, e=edit, b=add_btn, init=proposed:
                 self._album_edit_changed(f, e, b, init))
             table.setCellWidget(r, 3, add_btn)
+            clear_btn = QPushButton("Clear")
+            if is_clear:
+                clear_btn.setEnabled(False)
+                clear_btn.setToolTip("Already set to be removed — press Enter"
+                                     " on the empty box to cancel, or type a"
+                                     " replacement value")
+            elif has_val:
+                clear_btn.setToolTip(
+                    "Propose removing this field's value from every track of"
+                    " the album (current value → nothing). Written only when"
+                    " you Apply, like any other change.")
+                clear_btn.clicked.connect(
+                    lambda _c, f=field, a=adir: self._album_field_cleared(a, f))
+            else:
+                clear_btn.setEnabled(False)
+                clear_btn.setToolTip("No current value to remove")
+            table.setCellWidget(r, 4, clear_btn)
             pend = pending_edits.get(field)
             if pend is not None and pend.strip() != proposed.strip():
                 edit.setText(pend)
@@ -774,6 +811,7 @@ class DetailPanel(QWidget):
         table.resizeColumnsToContents()
         table.setColumnWidth(2, max(260, table.columnWidth(2)))
         table.setColumnWidth(3, 60)
+        table.setColumnWidth(4, 64)
         enable_copy(table)
         persist_header(self.cfg, "album_fields", table.horizontalHeader())
         self.album_table = table
@@ -940,6 +978,20 @@ class DetailPanel(QWidget):
         self.refresh()
         self.owner.refresh_tree()
 
+    def _album_field_cleared(self, adir, field):
+        """Clear button: propose removing the field's value from every track
+        (current value -> nothing). set_manual_proposal replaces any open
+        proposal for the field, so Clear and a typed value overwrite each
+        other; tracks that already have no value are left alone."""
+        for (tid,) in self.con.execute(
+                "SELECT id FROM tracks WHERE album_dir=? AND missing=0",
+                (adir,)):
+            applier.set_manual_proposal(self.con, tid, field, [])
+        # Clear overrides half-written text in this row's box
+        self._stash_album_edits(exclude=field)
+        self.refresh()
+        self.owner.refresh_tree()
+
     def _stash_album_edits(self, exclude=None):
         """Save the not-yet-confirmed album field edits so the next rebuild
         of the album view restores them (consumed once in show_album)."""
@@ -1036,6 +1088,9 @@ class DetailPanel(QWidget):
                     c0 = e["file"] if mode == "problem" else e["label"]
                     cur_txt = join_vals(e["current"], self.sep())
                     proposed_txt = join_vals(e["proposed"], self.sep())
+                    if (not e["proposed"] and e["status"] != "needs_input"
+                            and e["field"] in tagio.EDITABLE_FIELDS):
+                        proposed_txt = CLEAR_MARKER   # empty new value = Clear
                     if e.get("rule") == "id3v1_conflict":
                         cur_txt += "   (ID3v2 — current)"
                         proposed_txt += "   (old ID3v1)"
@@ -1087,8 +1142,19 @@ class DetailPanel(QWidget):
         text = item.text(3).rstrip()
         if text.endswith("(old ID3v1)"):    # display annotation, not a value
             text = text[:-len("(old ID3v1)")].rstrip()
-        vals = split_vals(text, self.sep())
-        applier.set_manual_proposal(self.con, e["track_id"], e["field"], vals)
+        if text.strip() == CLEAR_MARKER:
+            # the remove-value display text, unchanged: keep the proposal
+            applier.set_manual_proposal(self.con, e["track_id"], e["field"], [])
+        elif not text.strip():
+            # emptied cell = withdraw the proposal (same as the album boxes)
+            open_qs = ",".join("'%s'" % s for s in db.ALL_OPEN_STATUSES)
+            self.con.execute(
+                "DELETE FROM proposals WHERE track_id=? AND field=?"
+                " AND status IN (%s)" % open_qs, (e["track_id"], e["field"]))
+            self.con.commit()
+        else:
+            vals = split_vals(text, self.sep())
+            applier.set_manual_proposal(self.con, e["track_id"], e["field"], vals)
         self.owner.refresh_tree()
         # the edit changed the row's status in the DB (needs_input/postponed
         # -> edited), but the tree items still hold the OLD entry dicts -
@@ -1276,8 +1342,9 @@ class DetailPanel(QWidget):
                   if f in tagio.PRIMARY_FIELDS or tags.get(f) or f in props
                   or show_all]
         self._track_fields = fields
-        self.track_table = QTableWidget(len(fields), 3)
-        self.track_table.setHorizontalHeaderLabels(["Field", "Current", "Proposed"])
+        self.track_table = QTableWidget(len(fields), 4)
+        self.track_table.setHorizontalHeaderLabels(
+            ["Field", "Current", "Proposed", ""])
         self._track_id = track_id
         for r, field in enumerate(fields):
             it0 = QTableWidgetItem(field_label(field))
@@ -1285,13 +1352,34 @@ class DetailPanel(QWidget):
             it1 = QTableWidgetItem(join_vals(tags.get(field, []), self.sep()))
             it1.setFlags(it1.flags() & ~Qt.ItemIsEditable)
             p = props.get(field)
-            it2 = QTableWidgetItem(join_vals(p["proposed"], self.sep()) if p else "")
+            proposed_txt = join_vals(p["proposed"], self.sep()) if p else ""
+            if p and not p["proposed"]:
+                proposed_txt = CLEAR_MARKER   # empty new value = Clear
+            it2 = QTableWidgetItem(proposed_txt)
             self.track_table.setItem(r, 0, it0)
             self.track_table.setItem(r, 1, it1)
             self.track_table.setItem(r, 2, it2)
+            clear_btn = QPushButton("Clear")
+            if proposed_txt == CLEAR_MARKER:
+                clear_btn.setEnabled(False)
+                clear_btn.setToolTip("Already set to be removed — empty the"
+                                     " Proposed cell to cancel, or type a"
+                                     " replacement value")
+            elif tags.get(field):
+                clear_btn.setToolTip(
+                    "Propose removing this field's value (current value →"
+                    " nothing). Written only when you Apply, like any other"
+                    " change.")
+                clear_btn.clicked.connect(
+                    lambda _c, f=field: self._track_cleared(f))
+            else:
+                clear_btn.setEnabled(False)
+                clear_btn.setToolTip("No current value to remove")
+            self.track_table.setCellWidget(r, 3, clear_btn)
         self.track_table.itemChanged.connect(self._track_edited)
         self.track_table.resizeColumnsToContents()
         self.track_table.setColumnWidth(2, max(240, self.track_table.columnWidth(2)))
+        self.track_table.setColumnWidth(3, 64)
         enable_copy(self.track_table)
         persist_header(self.cfg, "track_fields", self.track_table.horizontalHeader())
         self.lay.addWidget(self.track_table)
@@ -1299,7 +1387,8 @@ class DetailPanel(QWidget):
         all_cb.setChecked(show_all)
         all_cb.toggled.connect(self._toggle_all_fields)
         self.lay.addWidget(all_cb)
-        note = QLabel("Empty 'Proposed' = no change. Multi-value fields use '%s'."
+        note = QLabel("Empty 'Proposed' = no change · Clear proposes removing"
+                      " the value. Multi-value fields use '%s'."
                       % self.sep().strip())
         self.lay.addWidget(note)
 
@@ -1320,10 +1409,34 @@ class DetailPanel(QWidget):
         self._show_all_fields = on
         self.refresh()
 
+    def _track_cleared(self, field):
+        """Clear button: propose removing the field's value (current ->
+        nothing). Replaces any open proposal for the field, exactly like
+        the album-level Clear."""
+        applier.set_manual_proposal(self.con, self._track_id, field, [])
+        self.owner.refresh_tree()
+        self.refresh()
+
     def _track_edited(self, item):
         if item.column() != 2 or item.row() >= len(self._track_fields):
             return
         field = self._track_fields[item.row()]
-        vals = split_vals(item.text(), self.sep())
-        applier.set_manual_proposal(self.con, self._track_id, field, vals)
+        text = item.text().strip()
+        if text == CLEAR_MARKER:
+            # the remove-value display text, unchanged: keep the proposal
+            applier.set_manual_proposal(self.con, self._track_id, field, [])
+        elif not text:
+            # emptied cell = withdraw the proposal (same as the album boxes)
+            open_qs = ",".join("'%s'" % s for s in db.ALL_OPEN_STATUSES)
+            self.con.execute(
+                "DELETE FROM proposals WHERE track_id=? AND field=?"
+                " AND status IN (%s)" % open_qs, (self._track_id, field))
+            self.con.commit()
+        else:
+            vals = split_vals(text, self.sep())
+            applier.set_manual_proposal(self.con, self._track_id, field, vals)
         self.owner.refresh_tree()
+        # rebuild so the Clear buttons and the ‹remove value› display match
+        # the new state; deferred - itemChanged fires while the cell editor
+        # is still closing
+        QTimer.singleShot(0, self.refresh)

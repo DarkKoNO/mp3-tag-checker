@@ -180,6 +180,92 @@ w.detail.show_ctypes([("rule", "track_format", "Track number format"),
                       ("issue", "cover_missing", "No embedded cover art")])
 assert w.detail.entry_tree.topLevelItemCount() >= 1
 
+# ---- Clear (remove value): album view ----
+from mp3lib import applier as _ap
+from mp3lib.gui.detail_panel import CLEAR_MARKER
+
+adir0 = albums[0]
+w.detail.show_album(adir0)
+
+
+def _artist_row():
+    return w.detail._album_field_rows.index("artist")
+
+
+def _artist_props():
+    return [(_json.loads(p[0]), p[1]) for p in w.con.execute(
+        "SELECT proposed, source FROM proposals WHERE album_dir=?"
+        " AND field='artist' AND status IN ('pending','edited')",
+        (adir0,)).fetchall()]
+
+
+assert w.detail.album_table.columnCount() == 5
+assert w.detail.album_table.cellWidget(_artist_row(), 4).isEnabled()
+w.detail.album_table.cellWidget(_artist_row(), 4).click()      # Clear
+props = _artist_props()
+assert props and all(v == [] and s == "manual" for v, s in props), props
+# the rebuilt view shows the clear state: placeholder + disabled Clear
+assert CLEAR_MARKER in w.detail._album_edits["artist"].placeholderText()
+assert not w.detail.album_table.cellWidget(_artist_row(), 4).isEnabled()
+item, e = _find_entry(w.detail.entry_tree, kind="prop", field="artist")
+assert item is not None and item.text(3) == CLEAR_MARKER, \
+    "clear proposal must show the remove-value marker in the tree"
+# typing a value replaces current->nothing with current->value...
+w.detail._album_edits["artist"].setText("Somebody")
+w.detail._album_field_edited(adir0, "artist")
+assert all(v == ["Somebody"] for v, _s in _artist_props())
+# ...and Clear replaces the typed proposal with current->nothing again
+w.detail.album_table.cellWidget(_artist_row(), 4).click()
+assert all(v == [] for v, _s in _artist_props())
+# Enter on the empty box cancels the removal completely
+w.detail._album_edits["artist"].setText("")
+w.detail._album_field_edited(adir0, "artist")
+assert not _artist_props(), "empty confirm must withdraw the clear proposal"
+
+# ---- Clear (remove value): track view ----
+tid2, path2 = w.con.execute(
+    "SELECT id, path FROM tracks WHERE album_dir=? AND filename LIKE '02%'",
+    (adir0,)).fetchone()          # track without the v1-conflict block
+w.detail.show_track(tid2)
+assert w.detail.track_table.columnCount() == 4
+
+
+def _row_of(field):
+    return w.detail._track_fields.index(field)
+
+
+def _track_props(field):
+    return [_json.loads(p[0]) for p in w.con.execute(
+        "SELECT proposed FROM proposals WHERE track_id=? AND field=?"
+        " AND status IN ('pending','edited')", (tid2, field)).fetchall()]
+
+
+w.detail.track_table.cellWidget(_row_of("album"), 3).click()   # Clear
+assert _track_props("album") == [[]]
+# _track_cleared rebuilt the view: marker shown, Clear disabled
+assert w.detail.track_table.item(_row_of("album"), 2).text() == CLEAR_MARKER
+assert not w.detail.track_table.cellWidget(_row_of("album"), 3).isEnabled()
+# typing over the marker turns the clear into a value proposal
+w.detail.track_table.item(_row_of("album"), 2).setText("Other")
+for _ in range(3):
+    app.processEvents()                  # deferred rebuild after the edit
+assert _track_props("album") == [["Other"]]
+# emptying the cell withdraws the proposal entirely
+w.detail.track_table.item(_row_of("album"), 2).setText("")
+for _ in range(3):
+    app.processEvents()
+assert _track_props("album") == []
+# Clear + Apply: the frame must really disappear from the MP3
+assert tagio.read_tags(path2).get("album"), "test file must have an album"
+w.detail.track_table.cellWidget(_row_of("album"), 3).click()
+pid = w.con.execute(
+    "SELECT id FROM proposals WHERE track_id=? AND field='album'"
+    " AND status IN ('pending','edited')", (tid2,)).fetchone()[0]
+res = _ap.apply_proposals(w.con, cfg["settings"], prop_ids=[pid])
+assert res["files"] == 1 and not res["errors"], res
+assert not tagio.read_tags(path2).get("album"), \
+    "applying a clear proposal must remove the tag frame from the file"
+
 # remove from library (db only; files stay)
 from mp3lib import db as _db
 _db.remove_scope(w.con, artist_folders=["ArtistB"])

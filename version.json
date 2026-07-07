@@ -1,6 +1,16 @@
 {
-  "version": "1.1.0",
+  "version": "1.2.0",
   "changelog": [
+    {
+      "version": "1.2.0",
+      "date": "2026-07-07",
+      "changes": [
+        "Clear buttons: remove a field's existing value — per album (fields table) or per track (track view). Clearing proposes 'current value → nothing'; applying it deletes the tag from the MP3.",
+        "Clear and typed values replace each other: after Clear you can still type a replacement value (and vice versa) before applying.",
+        "Removal proposals are now clearly shown as '‹remove value›' in all change lists.",
+        "Emptying a proposed-value cell now consistently withdraws the proposal (in the album boxes, the album change list and the track view)."
+      ]
+    },
     {
       "version": "1.1.0",
       "date": "2026-07-07",

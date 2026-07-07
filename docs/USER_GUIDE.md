@@ -70,6 +70,15 @@ for a detailed tooltip). You can:
 
 - **check or uncheck** individual proposals — nothing unchecked is written,
 - **edit values by hand** before applying,
+- **remove a value entirely** with the **Clear** button — next to the Add
+  button in the album fields table (clears the field on every track of the
+  album) and in the last column of the single-track view. Clearing creates
+  a manual change *current value → nothing*, shown as `‹remove value›`;
+  applying it deletes the tag from the file. Clear and a typed value
+  replace each other — after clicking Clear you can still type a
+  replacement into the box and press Enter, and clicking Clear after
+  typing turns that proposal into a removal. Confirming an emptied box
+  withdraws the proposal again,
 - **postpone** an issue you want to decide later, or add an **exception**
   so a rule stops flagging a particular case.
 

@@ -35,7 +35,8 @@ Jakub Konopásek.
   required to match `^\d{4}$` (a four-digit number) while still accepting
   values like `unknown` or `undated` for albums where no year exists.
 - **Proposes fixes** — you review them per album, per artist, or per change
-  type, edit anything by hand, and apply only what you select.
+  type, edit anything by hand (including **Clear** to remove a field's value
+  entirely), and apply only what you select.
 - **Browses the library** by artist → album, or grouped by found problem
   (change type), so you can work through one artist or one kind of issue at
   a time.
