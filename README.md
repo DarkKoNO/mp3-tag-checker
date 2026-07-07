@@ -30,8 +30,17 @@ Jakub Konopásek.
   - album-artist unification, artist ↔ album artist consistency
   - missing or too-small embedded cover art, missing `folder.jpg` /
     `artist.jpg`
+- **Custom format rules per field**: a regular expression, optionally
+  combined with a list of allowed exceptions. For example, year can be
+  required to match `^\d{4}$` (a four-digit number) while still accepting
+  values like `unknown` or `undated` for albums where no year exists.
 - **Proposes fixes** — you review them per album, per artist, or per change
   type, edit anything by hand, and apply only what you select.
+- **Browses the library** by artist → album, or grouped by found problem
+  (change type), so you can work through one artist or one kind of issue at
+  a time.
+- **Searches metadata** with multiple conditions combined, including
+  regular expressions — and lets you save search expressions for reuse.
 - **Keeps history**: every write creates a tag snapshot and a changelog
   entry; any file can be reverted to any earlier state.
 - **Online metadata on demand** (never automatic): MusicBrainz release
