@@ -1,0 +1,20 @@
+# Python environment and caches
+.venv/
+__pycache__/
+*.pyc
+
+# Personal data - libraries, settings, scan databases (recreated on first run)
+config.json
+folders.txt
+themes.json
+library*.db
+*.db
+*.db-wal
+*.db-shm
+
+dev/config.backup.json
+
+# Runtime output
+error.log
+probe_report.md
+probe.db
