@@ -107,6 +107,31 @@ assert not w.con.execute(
     "SELECT 1 FROM proposals WHERE album_dir=? AND field='genre'"
     " AND status IN ('pending','edited')", (albums[0],)).fetchall()
 
+# committing one row must NOT wipe the half-written edit of another row:
+# the rebuild after Add has to carry unconfirmed text (and its blue
+# highlight) over, without committing it
+w.detail.show_album(albums[0])
+e_genre = w.detail._album_edits["genre"]
+e_genre.setText("Jazz")
+e_genre.textEdited.emit("Jazz")
+e_year = w.detail._album_edits["year"]
+e_year.setText("199")                       # half-written, no Enter/Add yet
+e_year.textEdited.emit("199")
+w.detail._album_field_edited(albums[0], "genre")     # Add on genre only
+assert w.detail._album_edits["year"].text() == "199", \
+    "unconfirmed edit was lost by the rebuild after Add"
+assert "year" in w.detail._album_dirty_fields
+assert "Unsaved edit" in w.detail._album_prop_header.text()
+assert not w.con.execute(
+    "SELECT 1 FROM proposals WHERE album_dir=? AND field='year'"
+    " AND status IN ('pending','edited')", (albums[0],)).fetchall(), \
+    "half-written edit must never be committed by another row's Add"
+# ...but an unrelated later rebuild starts clean (carry-over is one-shot)
+w.detail.show_album(albums[0])
+assert w.detail._album_edits["year"].text() == ""
+w.detail._album_edits["genre"].setText("")           # cleanup: drop proposal
+w.detail._album_field_edited(albums[0], "genre")
+
 # multi-artist detailed view ('Show all changes' across artists)
 w.detail._artists_detailed = True
 w.detail.show_artists(["ArtistA", "ArtistB"])

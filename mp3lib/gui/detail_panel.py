@@ -717,6 +717,10 @@ class DetailPanel(QWidget):
         bold.setBold(True)
         self._album_prop_header = QLabel(self._PROP_HEADER_DEFAULT)
         self._album_dirty_fields = set()
+        # unconfirmed edits saved by _album_field_edited before a rebuild;
+        # consumed exactly once so a later, unrelated refresh starts clean
+        pending_edits = getattr(self, "_album_pending_edits", {})
+        self._album_pending_edits = {}
         left_head.addWidget(self._album_prop_header)
         table = QTableWidget(len(album_fields), 4)
         table.setHorizontalHeaderLabels(["Field", "Current", "Proposed", ""])
@@ -761,6 +765,10 @@ class DetailPanel(QWidget):
                 lambda _t, f=field, e=edit, b=add_btn, init=proposed:
                 self._album_edit_changed(f, e, b, init))
             table.setCellWidget(r, 3, add_btn)
+            pend = pending_edits.get(field)
+            if pend is not None and pend.strip() != proposed.strip():
+                edit.setText(pend)
+                self._album_edit_changed(field, edit, add_btn, proposed)
         table.resizeColumnsToContents()
         table.setColumnWidth(2, max(260, table.columnWidth(2)))
         table.setColumnWidth(3, 60)
@@ -924,6 +932,11 @@ class DetailPanel(QWidget):
                     "SELECT id FROM tracks WHERE album_dir=? AND missing=0",
                     (adir,)):
                 applier.set_manual_proposal(self.con, tid, field, vals)
+        # refresh() rebuilds the whole table, which would wipe half-written
+        # text in the OTHER rows - carry their unconfirmed edits over
+        self._album_pending_edits = {
+            f: self._album_edits[f].text()
+            for f in self._album_dirty_fields if f != field}
         self.refresh()
         self.owner.refresh_tree()
 
