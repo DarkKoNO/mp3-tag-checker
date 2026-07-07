@@ -132,6 +132,44 @@ assert w.detail._album_edits["year"].text() == ""
 w.detail._album_edits["genre"].setText("")           # cleanup: drop proposal
 w.detail._album_field_edited(albums[0], "genre")
 
+# filling a value into a 'needs input' row (missing required field) must
+# make that row applicable IMMEDIATELY: Apply / right-click used to read
+# the stale pre-edit entries and claimed the rows were postponed
+from PySide6.QtCore import Qt
+
+
+def _find_entry(tree, **want):
+    for t in range(tree.topLevelItemCount()):
+        top = tree.topLevelItem(t)
+        for c in range(top.childCount()):
+            e = top.child(c).data(0, Qt.UserRole)
+            if e and all(e.get(k) == v for k, v in want.items()):
+                return top.child(c), e
+    return None, None
+
+
+w.detail.show_album(albums[0])
+item, e = _find_entry(w.detail.entry_tree, kind="prop", field="publisher",
+                      status="needs_input")
+assert item is not None, "expected a needs_input row for missing publisher"
+tid = e["track_id"]
+# a half-written album-field edit must survive the rebuild caused below
+w.detail._album_edits["year"].setText("198")
+w.detail._album_edits["year"].textEdited.emit("198")
+item.setText(3, "Ipecac")                # the user fills in the value
+for _ in range(3):
+    app.processEvents()                  # run the deferred view rebuild
+item, e = _find_entry(w.detail.entry_tree, kind="prop", field="publisher",
+                      track_id=tid)
+assert e and e["status"] == "edited", ("row must become applicable", e)
+item.setSelected(True)
+ids = [x["prop_id"] for x in w.detail._selected_entries()
+       if x["kind"] == "prop" and x["status"] in ("pending", "edited")]
+assert ids, "filled-in row must be seen by 'Apply selected changes'"
+assert w.detail._album_edits["year"].text() == "198", \
+    "unconfirmed field edit lost by the needs_input rebuild"
+assert "year" in w.detail._album_dirty_fields
+
 # multi-artist detailed view ('Show all changes' across artists)
 w.detail._artists_detailed = True
 w.detail.show_artists(["ArtistA", "ArtistB"])

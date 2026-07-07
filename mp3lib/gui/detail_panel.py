@@ -5,7 +5,7 @@ import json
 from collections import Counter, defaultdict
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QColor, QFont, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView, QCheckBox, QGridLayout, QHBoxLayout, QLabel, QLineEdit,
@@ -148,7 +148,9 @@ class DetailPanel(QWidget):
             QMessageBox.information(
                 self, "Nothing to apply",
                 "Select proposal rows first. Postponed rows are never"
-                " applied — use 'Remove postpone' on them first.")
+                " applied — use 'Remove postpone' on them first. Rows marked"
+                " 'needs input' have no value yet — double-click their"
+                " Proposed column and fill one in.")
             return
         self.owner.apply_scope(prop_ids=ids)
 
@@ -934,11 +936,18 @@ class DetailPanel(QWidget):
                 applier.set_manual_proposal(self.con, tid, field, vals)
         # refresh() rebuilds the whole table, which would wipe half-written
         # text in the OTHER rows - carry their unconfirmed edits over
-        self._album_pending_edits = {
-            f: self._album_edits[f].text()
-            for f in self._album_dirty_fields if f != field}
+        self._stash_album_edits(exclude=field)
         self.refresh()
         self.owner.refresh_tree()
+
+    def _stash_album_edits(self, exclude=None):
+        """Save the not-yet-confirmed album field edits so the next rebuild
+        of the album view restores them (consumed once in show_album)."""
+        if not (self.current and self.current[0] == "album"):
+            return    # boxes of an older album view no longer exist
+        self._album_pending_edits = {
+            f: self._album_edits[f].text()
+            for f in self._album_dirty_fields if f != exclude}
 
     def _collect_album_entries(self, adir, fname_by_id):
         """Merge open proposals (all statuses) and issues into one list; issues
@@ -1081,6 +1090,13 @@ class DetailPanel(QWidget):
         vals = split_vals(text, self.sep())
         applier.set_manual_proposal(self.con, e["track_id"], e["field"], vals)
         self.owner.refresh_tree()
+        # the edit changed the row's status in the DB (needs_input/postponed
+        # -> edited), but the tree items still hold the OLD entry dicts -
+        # Apply / Postpone / right-click would not see the row as applicable.
+        # Rebuild the view; deferred, because itemChanged fires while the
+        # cell editor is still closing.
+        self._stash_album_edits()
+        QTimer.singleShot(0, self.refresh)
 
     def _selected_entries(self):
         out = []
@@ -1103,6 +1119,11 @@ class DetailPanel(QWidget):
         postponed = [e for e in entries if e["kind"] == "prop"
                      and e["status"] == "postponed"]
         menu = QMenu(self)
+        if any(e["kind"] == "prop" and e["status"] == "needs_input"
+               for e in entries):
+            hint = menu.addAction("‹needs input› — double-click the Proposed"
+                                  " column and fill in a value first")
+            hint.setEnabled(False)
         if applicable:
             menu.addAction("Apply selected change(s)", self._apply_selected)
             menu.addAction(dot_icon(STATUS_COLORS["postponed"]), "Postpone",
