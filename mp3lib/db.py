@@ -362,6 +362,21 @@ def remove_scope(con, artist_folders=None, album_dirs=None, track_ids=None):
     return len(arts), len(adirs), len(tids)
 
 
+def purge_gone(con, track_ids):
+    """Remove the given no-longer-on-disk tracks from the database, then drop
+    orphaned album-level leftovers (proposals/issues/album facts whose album
+    folder has no tracks at all any more — e.g. entries recorded under an old
+    path before files were renamed). Change log and exceptions stay."""
+    if track_ids:
+        remove_scope(con, track_ids=list(track_ids))
+    for table, col in (("proposals", "album_dir"), ("issues", "album_dir"),
+                       ("albums", "album_dir"), ("pending_covers", "album_dir")):
+        con.execute(
+            "DELETE FROM %s WHERE %s IS NOT NULL AND %s NOT IN"
+            " (SELECT DISTINCT album_dir FROM tracks)" % (table, col, col))
+    con.commit()
+
+
 def add_exception(con, artist_folder, album_dir, track_id, rule, field, info=""):
     con.execute(
         "INSERT INTO exceptions(artist_folder, album_dir, track_id, rule, field,"

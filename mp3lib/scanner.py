@@ -13,10 +13,13 @@ ARTIST_IMG_NAMES = {"artist.jpg", "artist.jpeg", "artist.png"}
 
 
 def collect(root: Path, entries):
-    """Walk artist folders. Returns (files, missing_folders, artist_facts, album_facts).
-    files: list of (path, artist_folder, album_dir, size, mtime)."""
+    """Walk artist folders. Returns (files, missing_folders, artist_facts,
+    album_facts, errors). files: list of (path, artist_folder, album_dir,
+    size, mtime); errors: list of (path, message) for files/folders that
+    exist but cannot be read or safely addressed."""
     files = []
     missing = []
+    errors = []
     artist_facts = {}   # entry -> {'artist_jpg': bool}
     album_facts = {}    # album_dir -> {'artist_folder', 'folder_jpg': bool}
     dir_has_cover = {}
@@ -27,7 +30,12 @@ def collect(root: Path, entries):
             missing.append(entry)
             continue
         artist_facts[entry] = {"artist_jpg": False}
-        for dirpath, _dirs, filenames in os.walk(folder):
+
+        def on_walk_error(err, _entry=entry):
+            errors.append((getattr(err, "filename", None) or str(root / _entry),
+                           "folder could not be listed: %s" % err))
+
+        for dirpath, _dirs, filenames in os.walk(folder, onerror=on_walk_error):
             names_lower = {n.lower() for n in filenames}
             dir_has_cover[dirpath] = bool(names_lower & COVER_NAMES)
             if dirpath == str(folder) and names_lower & ARTIST_IMG_NAMES:
@@ -36,9 +44,19 @@ def collect(root: Path, entries):
             for name in filenames:
                 if name.lower().endswith(".mp3"):
                     p = os.path.join(dirpath, name)
+                    # a name the filesystem serves but path functions would
+                    # split differently (separator or other reserved
+                    # characters smuggled in, e.g. by a NAS) must not enter
+                    # the database as a broken entry
+                    if os.path.basename(p) != name or os.path.dirname(p) != dirpath:
+                        errors.append((p, "file name contains characters that"
+                                       " cannot be addressed safely — please"
+                                       " rename the file"))
+                        continue
                     try:
                         st = os.stat(p)
-                    except OSError:
+                    except OSError as e:
+                        errors.append((p, "file cannot be read: %s" % e))
                         continue
                     files.append((p, entry, dirpath, st.st_size, st.st_mtime))
                     mp3_here = True
@@ -48,7 +66,7 @@ def collect(root: Path, entries):
     for adir, facts in album_facts.items():
         parent = str(Path(adir).parent)
         facts["folder_jpg"] = dir_has_cover.get(adir) or dir_has_cover.get(parent, False)
-    return files, missing, artist_facts, album_facts
+    return files, missing, artist_facts, album_facts, errors
 
 
 def scan(con, settings, root, entries, progress=None, full=False, workers=8):
@@ -59,7 +77,7 @@ def scan(con, settings, root, entries, progress=None, full=False, workers=8):
 
     if progress:
         progress(0, 0, "Collecting file list...")
-    files, missing, artist_facts, album_facts = collect(root, entries)
+    files, missing, artist_facts, album_facts, errors = collect(root, entries)
 
     # update artist/album fact tables
     for entry, facts in artist_facts.items():
@@ -88,7 +106,6 @@ def scan(con, settings, root, entries, progress=None, full=False, workers=8):
     if progress:
         progress(0, n_read, "Reading tags of %d new/changed files..." % n_read)
     done = 0
-    errors = []
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = {pool.submit(tagio.read_tags, p): (p, artist, adir, size, mtime)
                    for p, artist, adir, size, mtime in to_read}
@@ -126,13 +143,16 @@ def scan(con, settings, root, entries, progress=None, full=False, workers=8):
     for p, artist, adir, size, mtime in files:
         con.execute("UPDATE tracks SET last_scan_id=?, missing=0 WHERE path=?",
                     (scan_id, p))
+    gone = []       # (track_id, path) of every not-found file in scan scope
     if scanned_artists:
         qs = ",".join("?" * len(scanned_artists))
-        for (p, tid) in con.execute(
-                "SELECT path, id FROM tracks WHERE artist_folder IN (%s)" % qs,
-                scanned_artists).fetchall():
+        for (p, tid, was_missing) in con.execute(
+                "SELECT path, id, missing FROM tracks WHERE artist_folder IN (%s)"
+                % qs, scanned_artists).fetchall():
             if p not in found_paths:
-                con.execute("UPDATE tracks SET missing=1 WHERE id=?", (tid,))
+                if not was_missing:
+                    con.execute("UPDATE tracks SET missing=1 WHERE id=?", (tid,))
+                gone.append((tid, p))
 
     db.finish_batch(con, scan_id, len(files))
     con.commit()
@@ -143,4 +163,4 @@ def scan(con, settings, root, entries, progress=None, full=False, workers=8):
     con.commit()
 
     return {"scan_id": scan_id, "files": len(files), "read": n_read, "new": n_new,
-            "missing_folders": missing, "errors": errors}
+            "missing_folders": missing, "errors": errors, "gone": gone}

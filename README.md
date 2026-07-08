@@ -44,6 +44,9 @@ Jakub Konopásek.
   regular expressions — and lets you save search expressions for reuse.
 - **Keeps history**: every write creates a tag snapshot and a changelog
   entry; any file can be reverted to any earlier state.
+- **Scan log**: after every scan a copyable log lists problems (unreadable
+  files, unsafe file names) with full paths, and files that vanished from
+  disk — with a one-click cleanup of their database leftovers.
 - **Online metadata on demand** (never automatic): MusicBrainz release
   search, Cover Art Archive covers, Deezer artist images.
 - **Multiple libraries**, each with its own root folder and database.

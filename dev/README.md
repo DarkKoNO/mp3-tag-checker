@@ -26,3 +26,9 @@ Do not copy it when giving the application to someone.
   themes.json, the Appearance settings tab (save-as-new, built-in protection).
 - **field_labels_test.py** — field-name alias sets: English/Czech built-ins,
   user sets, the Field names settings tab, live application in the GUI.
+- **special_chars_test.py** — offscreen replica of a real album with
+  slash/symbol titles and a huge AcoustID TXXX: scanning them, bounded
+  track-header width, ghost entries of renamed/deleted files (hidden in the
+  tree, explained in the album view, reported by the scan log, removable),
+  unaddressable-filename detection, stable change-type tree order, and the
+  ID3v1-conflict offer surviving diacritics differences (Kiioto/Kiiōtō).

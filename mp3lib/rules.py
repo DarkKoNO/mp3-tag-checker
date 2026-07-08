@@ -61,6 +61,35 @@ RULE_SEVERITY = {
 NON_FIXABLE = {"cover_missing", "cover_tiny", "track_gaps", "year_inconsistent",
                "artist_jpg", "id3v1_conflict", "plus_collab"}
 
+# Fixed workflow order of the problem types in the change-type tree: things
+# that should be resolved first (later rules depend on clean text/structure)
+# come first. Used as a STABLE sort key so the tree order never shuffles
+# when counts change after applying.
+RULE_PRIORITY = [
+    "v1_rescue", "id3v1_conflict", "id3v1",
+    "id3_version", "encoding", "mojibake",
+    "missing",                      # missing_<field> rules share this slot
+    "value_format", "track_format",
+    "multi_split", "single_value",
+    "plus_collab", "artist_superset", "albumartist", "artist_sync",
+    "publisher_from_comment",
+    "album_inconsistent", "year_inconsistent", "track_gaps",
+    "online_meta", "cover", "manual",
+    "cover_missing", "cover_tiny", "folder_jpg", "artist_jpg",
+]
+
+
+def rule_priority(rule):
+    """Stable sort rank of a change/problem type (lower = shown earlier).
+    Unknown types sort last, alphabetically via the caller's tie-break."""
+    r = rule or ""
+    if r.startswith("missing_"):
+        r = "missing"
+    try:
+        return RULE_PRIORITY.index(r)
+    except ValueError:
+        return len(RULE_PRIORITY)
+
 # Detailed, user-facing explanation of every change/problem type. Shown as a
 # tooltip wherever the type's name appears (tree, detail panel, settings).
 RULE_DESCRIPTIONS = {
@@ -801,10 +830,16 @@ def evaluate(con, settings, artist_folders=None, album_dirs=None):
                   "Year differs between tracks: %s" % ", ".join(sorted(years)))
 
         def effective_vals(tid, field, fallback):
-            """Current tag values, or what an open proposal will turn them into."""
+            """Current tag values, or what an open proposal will turn them into.
+            id3v1_conflict rows don't count: they only OFFER the old v1 value
+            as an alternative — treating that offer as the future value made
+            album-level rules fire on it and overwrite the offer itself
+            (e.g. v1 'Kiioto' vs v2 'Kiiōtō' spawned a bogus artist_superset
+            proposal and the conflict lost its current/proposed display)."""
             row = con.execute(
                 "SELECT proposed FROM proposals WHERE track_id=? AND field=?"
-                " AND status IN ('pending','edited','postponed')",
+                " AND status IN ('pending','edited','postponed')"
+                " AND (rule IS NULL OR rule != 'id3v1_conflict')",
                 (tid, field)).fetchone()
             if row:
                 try:

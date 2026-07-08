@@ -6,10 +6,11 @@ from pathlib import Path
 from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtGui import QColor, QPixmap
 from PySide6.QtWidgets import (
-    QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout,
-    QFrame, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QListWidget,
-    QListWidgetItem, QMessageBox, QPushButton, QRadioButton, QScrollArea,
-    QSpinBox, QSplitter, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
+    QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog,
+    QFormLayout, QFrame, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
+    QListWidget, QListWidgetItem, QMessageBox, QPlainTextEdit, QPushButton,
+    QRadioButton, QScrollArea, QSpinBox, QSplitter, QTableWidget,
+    QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 from .. import applier, db, online
@@ -156,6 +157,79 @@ class ScanDialog(QDialog):
                                     "The selection contains no folders.")
             return
         super().accept()
+
+
+class ScanReportDialog(QDialog):
+    """Log window shown after a scan/refresh finishes: problems first (with
+    the full path of every affected file), then the files that were not found
+    on disk, with the choice to remove their database entries now or keep
+    them. The whole log can be selected and copied."""
+
+    def __init__(self, con, res, parent=None, title="Scan finished"):
+        super().__init__(parent)
+        self.con = con
+        self.gone = list(res.get("gone") or [])
+        self.cleaned = False
+        self.setWindowTitle(title)
+        self.resize(760, 520)
+        lay = QVBoxLayout(self)
+
+        lines = ["Scanned %d file(s) — %d read as new/changed, %d new."
+                 % (res.get("files", 0), res.get("read", 0), res.get("new", 0))]
+        errors = res.get("errors") or []
+        if errors:
+            lines += ["", "PROBLEMS (%d) — these files were skipped:" % len(errors)]
+            for path, msg in errors:
+                lines.append("  %s" % path)
+                lines.append("      %s" % msg)
+        missing_folders = res.get("missing_folders") or []
+        if missing_folders:
+            lines += ["", "Folders not found under the library root (%d):"
+                      % len(missing_folders)]
+            lines += ["  %s" % f for f in missing_folders]
+        if self.gone:
+            lines += ["", "WARNING — files not found on disk (%d), maybe"
+                      " renamed, moved or deleted:" % len(self.gone)]
+            lines += ["  %s" % p for _tid, p in self.gone]
+            lines += ["", "Their database entries (including any pending"
+                      " changes recorded for them) are leftovers. You can"
+                      " remove them now, or keep them and decide later —"
+                      " they are not shown as work to do either way."]
+        if not errors and not missing_folders and not self.gone:
+            lines += ["", "No problems found."]
+        self.log = QPlainTextEdit("\n".join(lines))
+        self.log.setReadOnly(True)
+        lay.addWidget(self.log)
+
+        btns = QHBoxLayout()
+        copy_btn = QPushButton("Copy log")
+        copy_btn.clicked.connect(lambda: QApplication.clipboard().setText(
+            self.log.toPlainText()))
+        btns.addWidget(copy_btn)
+        btns.addStretch(1)
+        if self.gone:
+            self.clean_btn = QPushButton(
+                "Remove %d deleted file(s) from database" % len(self.gone))
+            self.clean_btn.setToolTip(
+                "Deletes the database entries (tags history, pending changes)"
+                " of the files listed above. Files on disk are never touched;"
+                " if a file reappears, a scan simply adds it again.")
+            self.clean_btn.clicked.connect(self._clean)
+            btns.addWidget(self.clean_btn)
+        close_btn = QPushButton("Close")
+        close_btn.setDefault(True)
+        close_btn.clicked.connect(self.accept)
+        btns.addWidget(close_btn)
+        lay.addLayout(btns)
+
+    def _clean(self):
+        db.purge_gone(self.con, [tid for tid, _p in self.gone])
+        self.cleaned = True
+        self.clean_btn.setEnabled(False)
+        self.clean_btn.setText("Removed from database")
+        self.log.appendPlainText(
+            "\nRemoved %d entr%s from the database."
+            % (len(self.gone), "y" if len(self.gone) == 1 else "ies"))
 
 
 class LibraryEditDialog(QDialog):

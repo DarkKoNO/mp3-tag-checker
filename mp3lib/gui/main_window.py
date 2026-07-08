@@ -14,15 +14,16 @@ from PySide6.QtWidgets import (
 
 from .. import applier, db, online, scanner
 from ..rules import (IMAGE_RULES, RULE_SEVERITY, is_non_fixable,
-                     missing_field_of, rule_description, rule_label)
+                     missing_field_of, rule_description, rule_label,
+                     rule_priority)
 from ..settings import active_library, lib_db_path, save_config
 from ..updater import local_version
 from .common import (SEV_RANK, Worker, dot_icon, enable_copy, field_label,
                      persist_header, persist_splitter, worse)
 from .detail_panel import DetailPanel
-from .dialogs import (ChangelogPane, LibrariesDialog, ScanDialog, SearchPane,
-                      SettingsPane, UpdateCheckThread, UpdateDialog,
-                      run_update_flow)
+from .dialogs import (ChangelogPane, LibrariesDialog, ScanDialog,
+                      ScanReportDialog, SearchPane, SettingsPane,
+                      UpdateCheckThread, UpdateDialog, run_update_flow)
 
 KIND_ROLE = Qt.UserRole + 1
 KEY_ROLE = Qt.UserRole + 2
@@ -544,11 +545,19 @@ class MainWindow(QMainWindow):
 
     def _severities(self):
         alb_sev, art_sev, trk_sev = {}, {}, {}
+        live_tracks = {r[0] for r in self.con.execute(
+            "SELECT id FROM tracks WHERE missing=0")}
+        live_albums = {r[0] for r in self.con.execute(
+            "SELECT DISTINCT album_dir FROM tracks WHERE missing=0")}
         extra = "" if self.show_images() else \
             " WHERE rule NOT IN (%s)" % ",".join("'%s'" % r for r in IMAGE_RULES)
         for tid, artist, adir, sev in self.con.execute(
                 "SELECT track_id, artist_folder, album_dir, severity FROM issues"
                 + extra):
+            if tid is not None and tid not in live_tracks:
+                continue        # leftover entry of a renamed/deleted file
+            if adir is not None and adir not in live_albums:
+                continue
             if tid is not None:
                 trk_sev[tid] = worse(trk_sev.get(tid), sev)
             if adir is not None:
@@ -562,8 +571,12 @@ class MainWindow(QMainWindow):
             + db.rules_condition(self._image_excludes())
         for artist, adir, n in self.con.execute(
                 "SELECT artist_folder, album_dir, COUNT(*) FROM proposals"
-                " WHERE status IN ('pending','edited')" + extra +
-                " GROUP BY artist_folder, album_dir"):
+                " WHERE status IN ('pending','edited')"
+                " AND (track_id IS NULL OR track_id IN"
+                "      (SELECT id FROM tracks WHERE missing=0))"
+                " AND (album_dir IS NULL OR album_dir IN"
+                "      (SELECT DISTINCT album_dir FROM tracks WHERE missing=0))"
+                + extra + " GROUP BY artist_folder, album_dir"):
             if adir:
                 alb_open[adir] = alb_open.get(adir, 0) + n
             art_open[artist] = art_open.get(artist, 0) + n
@@ -617,12 +630,21 @@ class MainWindow(QMainWindow):
         _exc_arts, exc_albs, exc_art_level = (
             self._exception_scopes() if exc_only else (set(), set(), set()))
         fnames = dict(self.con.execute("SELECT id, filename FROM tracks"))
+        # entries whose files no longer exist on disk (renamed/moved/deleted)
+        # are leftovers waiting for cleanup — never shown as work to do
+        live_tracks = {r[0] for r in self.con.execute(
+            "SELECT id FROM tracks WHERE missing=0")}
+        live_albums = {r[0] for r in self.con.execute(
+            "SELECT DISTINCT album_dir FROM tracks WHERE missing=0")}
         # postponed / needs-input proposals stay visible here - only
         # exceptions disappear from the normal views
         all_props = db.open_proposals(self.con,
                                       statuses=db.ALL_OPEN_STATUSES,
                                       online_filter=self.online_filter(),
                                       exclude_rules=self._image_excludes())
+        all_props = [p for p in all_props
+                     if (p["track_id"] is None or p["track_id"] in live_tracks)
+                     and (p["album_dir"] is None or p["album_dir"] in live_albums)]
 
         groups = {}
         for p in all_props:
@@ -645,6 +667,10 @@ class MainWindow(QMainWindow):
                 continue
             if rule in IMAGE_RULES and not self.show_images():
                 continue
+            if tid is not None and tid not in live_tracks:
+                continue
+            if adir is not None and adir not in live_albums:
+                continue
             f = missing_field_of(rule)
             if f and (tid, f) in prop_fields:
                 continue
@@ -656,8 +682,13 @@ class MainWindow(QMainWindow):
             g["n"] += 1
 
         root_item = self.model.invisibleRootItem()
+        # STABLE order: severity, then the fixed workflow priority of the
+        # type, then its label — never the open-item count, which would make
+        # the whole tree shuffle every time something is applied
         order = sorted(groups.items(),
-                       key=lambda kv: (-SEV_RANK.get(kv[1]["sev"], 0), -kv[1]["n"]))
+                       key=lambda kv: (-SEV_RANK.get(kv[1]["sev"], 0),
+                                       rule_priority(kv[0][1]),
+                                       kv[1]["label"].lower()))
         for (ckind, key), g in order:
             if SEV_RANK.get(g["sev"], 0) < min_rank:
                 continue
@@ -887,6 +918,11 @@ class MainWindow(QMainWindow):
         if "error" in res:
             QMessageBox.critical(self, "Refresh failed", res["error"])
             return
+        # a quiet refresh stays quiet — the log window only opens when there
+        # is something to report (problems or files that vanished from disk)
+        if res.get("errors") or res.get("missing_folders") or res.get("gone"):
+            ScanReportDialog(self.con, res, parent=self,
+                             title="Refresh finished").exec()
         self.refresh_tree()
         self.detail.refresh()
         self.statusBar().showMessage(
@@ -897,15 +933,7 @@ class MainWindow(QMainWindow):
         if "error" in res:
             QMessageBox.critical(self, "Scan failed", res["error"])
             return
-        msg = ("Scanned %d files (%d read as new/changed, %d new).\n"
-               % (res["files"], res["read"], res["new"]))
-        if res["missing_folders"]:
-            msg += "\nFolders not found (%d):\n  " % len(res["missing_folders"]) \
-                   + "\n  ".join(res["missing_folders"][:15])
-        if res["errors"]:
-            msg += "\nRead errors (%d):\n  " % len(res["errors"]) \
-                   + "\n  ".join("%s: %s" % e for e in res["errors"][:10])
-        QMessageBox.information(self, "Scan finished", msg)
+        ScanReportDialog(self.con, res, parent=self).exec()
         self.refresh_tree()
 
     # ------------------------------------------------------------- internet ---

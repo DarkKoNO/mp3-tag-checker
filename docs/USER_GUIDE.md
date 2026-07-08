@@ -56,6 +56,16 @@ Click **Scan library…**. Scanning:
 **Scanning never modifies your files.** You can also rescan a single artist
 or album from the right-click menu in the tree.
 
+When a scan finishes, a **scan log** window opens. Problems come first —
+files that could not be read and file names that cannot be safely addressed
+(some NAS devices serve names with characters Windows cannot handle), each
+with its full path so you can find and rename it. Below that, the log lists
+files that were **not found on disk** — typically renamed, moved or deleted
+since the last scan. Their old database entries (including any pending
+changes recorded for them) are only leftovers: one click removes them from
+the database, or you can keep them and decide later. Either way they are not
+shown as work to do. The whole log can be selected and copied.
+
 ## 4. Reviewing problems
 
 The **Library** page shows everything the rules found. Group the tree **By

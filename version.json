@@ -1,6 +1,18 @@
 {
-  "version": "1.2.0",
+  "version": "1.3.0",
   "changelog": [
+    {
+      "version": "1.3.0",
+      "date": "2026-07-08",
+      "changes": [
+        "Scan log window: after every scan a copyable log shows problems first (unreadable files, unsafe file names — with full paths), then files not found on disk (renamed/moved/deleted) with a one-click option to remove their database entries or keep them.",
+        "Leftover entries of renamed/deleted files no longer appear as work to do: the change-type tree, counts and severity dots skip them, and opening such an album explains the situation instead of showing an empty editor with '0 tracks'.",
+        "Stable problem-type order: the change-type tree is sorted by severity and a fixed workflow priority (ID3v1 rescue → encoding → text repairs → field fixes → images) — the order no longer shuffles after applying changes.",
+        "Track view: huge unbreakable custom-tag values (e.g. AcoustID fingerprints) are shortened for display — they can no longer stretch the window to absurd widths.",
+        "Titles containing < > characters display correctly in the headers.",
+        "ID3v1/ID3v2 conflict offers keep their current/proposed values: other rules no longer mistake the offered old-v1 value for the real tag (e.g. 'Kiioto' vs 'Kiiōtō' no longer spawns a bogus artist proposal that displaced the conflict offer)."
+      ]
+    },
     {
       "version": "1.2.0",
       "date": "2026-07-07",

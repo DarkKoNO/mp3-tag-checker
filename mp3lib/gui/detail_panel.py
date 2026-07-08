@@ -1,6 +1,7 @@
 """Right-hand detail panel: artist / album / track views with
 current vs. proposed columns and inline editing of the proposed state."""
 
+import html
 import json
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -663,6 +664,48 @@ class DetailPanel(QWidget):
 
     # ---- album ----
 
+    def _show_gone_album(self, adir, artist):
+        """The album entry has no existing tracks any more (files renamed,
+        moved or deleted) — explain instead of showing an empty editor."""
+        album_name = self.owner.album_display(adir)
+        title_row = QHBoxLayout()
+        title_row.addWidget(sel_label(
+            "<h2><span style='color:gray;'>Album:</span> %s</h2>"
+            % html.escape(album_name)))
+        title_row.addStretch(1)
+        self.lay.addLayout(title_row)
+        n_open = self.con.execute(
+            "SELECT COUNT(*) FROM proposals WHERE album_dir=? AND status IN"
+            " ('pending','edited','postponed','needs_input')", (adir,)).fetchone()[0]
+        note = sel_label(
+            "<i>None of this entry's files exist on disk any more — they were"
+            " probably renamed, moved or deleted since the last scan.</i><br>"
+            "<i>This is only a leftover database entry (%d open proposal(s)"
+            " attached); the current files are listed under their new"
+            " location after a scan.</i><br><br>"
+            "<span style='color:gray;'>Recorded path: %s</span>"
+            % (n_open, html.escape(adir)))
+        note.setWordWrap(True)
+        self.lay.addWidget(note)
+        btns = QHBoxLayout()
+        rm = QPushButton("Remove this entry from the library")
+        rm.setToolTip("Deletes only the database entry (tracks, proposals,"
+                      " history snapshots) recorded under this old path."
+                      " No files on disk are touched.")
+
+        def _remove():
+            db.remove_scope(self.con, album_dirs=[adir])
+            self.show_nothing()
+            self.owner.refresh_tree()
+
+        rm.clicked.connect(_remove)
+        btns.addWidget(rm)
+        if artist and artist != "?":
+            btns.addWidget(self._refresh_btn(artists=[artist]))
+        btns.addStretch(1)
+        self.lay.addLayout(btns)
+        self.lay.addStretch(1)
+
     def show_album(self, adir):
         _clear(self.lay)
         self.current = ("album", adir)
@@ -674,6 +717,9 @@ class DetailPanel(QWidget):
         tracks = self.con.execute(
             "SELECT id, filename, path FROM tracks WHERE album_dir=? AND missing=0"
             " ORDER BY filename", (adir,)).fetchall()
+        if not tracks:
+            self._show_gone_album(adir, artist)
+            return
         snaps = {tid: (db.latest_snapshot(self.con, tid) or {}).get("tags", {})
                  for tid, _f, _p in tracks}
 
@@ -684,7 +730,8 @@ class DetailPanel(QWidget):
         album_name = self.owner.album_display(adir)
         title_row = QHBoxLayout()
         title_row.addWidget(sel_label(
-            "<h2><span style='color:gray;'>Album:</span> %s</h2>" % album_name))
+            "<h2><span style='color:gray;'>Album:</span> %s</h2>"
+            % html.escape(album_name)))
         title_row.addWidget(copy_button(lambda n=album_name: n, "Copy album name"))
         open_btn = QPushButton("Open folder")
         open_btn.setToolTip(adir)
@@ -695,7 +742,7 @@ class DetailPanel(QWidget):
         artist_row = QHBoxLayout()
         artist_row.addWidget(sel_label("<i><span style='color:gray;'>Artist:"
                                        "</span> %s — %d tracks</i>"
-                                       % (artist, len(tracks))))
+                                       % (html.escape(artist), len(tracks))))
         artist_row.addWidget(copy_button(lambda a=artist: a, "Copy artist name"))
         artist_row.addStretch(1)
         left_head.addLayout(artist_row)
@@ -1311,7 +1358,7 @@ class DetailPanel(QWidget):
         tags = snap["tags"] if snap else {}
 
         name_row = QHBoxLayout()
-        name_row.addWidget(sel_label("<h3>%s</h3>" % fname))
+        name_row.addWidget(sel_label("<h3>%s</h3>" % html.escape(fname)))
         name_row.addWidget(copy_button(lambda f=fname: f, "Copy file name"))
         name_row.addStretch(1)
         self.lay.addLayout(name_row)
@@ -1323,9 +1370,20 @@ class DetailPanel(QWidget):
         self.lay.addWidget(sel_label("<i>%s</i>" % meta))
         txxx = tags.get("_txxx") or {}
         if txxx:
-            lbl = sel_label("<i>Custom tags (TXXX): %s</i>" % ", ".join(
-                "%s = %s" % (k, "; ".join(v)) for k, v in sorted(txxx.items())))
+            # values are shown shortened: things like AcoustID fingerprints
+            # are thousands of characters in ONE unbreakable token, which
+            # word-wrap cannot break — the label would force the whole
+            # window to grow to the token's width
+            def short(s, n=100):
+                return s if len(s) <= n else s[:n] + "…"
+            txt = ", ".join(
+                "%s = %s" % (k, short("; ".join(v)))
+                for k, v in sorted(txxx.items()))
+            lbl = sel_label("<i>Custom tags (TXXX): %s</i>" % html.escape(txt))
             lbl.setWordWrap(True)
+            lbl.setToolTip("Extra tags written by other software (MusicBrainz"
+                           " Picard etc.). Long values are shortened here;"
+                           " the files are not modified.")
             self.lay.addWidget(lbl)
 
         issues = [(sev, msg) for sev, msg, rule in self.con.execute(
