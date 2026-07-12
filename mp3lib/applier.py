@@ -12,10 +12,12 @@ from . import db, rules, tagio
 
 
 def _write_track(con, settings, batch_id, track_id, path, changes, origin_by_field,
-                 reason="applied", keep_v1="auto"):
+                 reason="applied", keep_v1="auto", keep_ape=None):
     """Write changes to one file, snapshot + changelog. Returns #fields changed.
     keep_v1: 'auto' = preserve the old tag while a v1/v2 conflict is open;
-    bytes = write exactly this ID3v1 block (history revert); None = normal."""
+    bytes = write exactly this ID3v1 block (history revert); None = normal.
+    keep_ape: {field: [values]} = restore this APEv2 tag (history revert);
+    None = strip per settings, but never while a v2 conflict is open."""
     if keep_v1 == "auto":
         keep = None
         # unresolved ID3v1/v2 conflict: never let a write destroy the old tag
@@ -25,13 +27,21 @@ def _write_track(con, settings, batch_id, track_id, path, changes, origin_by_fie
             keep = tagio.get_v1_bytes(path)
     else:
         keep = keep_v1
+    # APEv2: same "never destroy an unresolved conflict" guard (unless a revert
+    # is explicitly restoring the tag via keep_ape)
+    strip_ape = None
+    if keep_ape is None and con.execute(
+            "SELECT 1 FROM issues WHERE track_id=? AND rule='apev2_conflict'"
+            " LIMIT 1", (track_id,)).fetchone():
+        strip_ape = False
     # a cover replacement: remember the old picture so revert can restore it
     if "cover" in changes:
         snap = db.latest_snapshot(con, track_id)
         old_cov = tagio.get_cover_data(path)
         if snap and old_cov:
             db.save_cover_blob(con, snap["id"], old_cov[0], old_cov[1])
-    applied = tagio.write_changes(path, changes, settings, keep_v1_bytes=keep)
+    applied = tagio.write_changes(path, changes, settings, keep_v1_bytes=keep,
+                                  strip_ape=strip_ape, keep_ape_data=keep_ape)
     tags = tagio.read_tags(path)
     db.add_snapshot(con, track_id, batch_id, reason, tags,
                     keep=settings["history_keep"])
@@ -44,9 +54,11 @@ def _write_track(con, settings, batch_id, track_id, path, changes, origin_by_fie
                       origin_by_field.get(field, "rule"))
     pseudo = [f for f in changes if f in tagio.PSEUDO_FIELDS]
     for f in pseudo:
-        db.log_change(con, track_id, path, f,
-                      ["present"] if f == "_id3v1" else ["old"],
-                      ["removed"] if f == "_id3v1" else ["2.4"],
+        if f in ("_id3v1", "_apev2"):
+            old_v, new_v = ["present"], ["removed"]
+        else:
+            old_v, new_v = ["old"], ["2.4"]
+        db.log_change(con, track_id, path, f, old_v, new_v,
                       origin_by_field.get(f, "rule"))
     return len(applied) + len(pseudo)
 
@@ -127,6 +139,21 @@ def apply_proposals(con, settings, artist_folders=None, album_dirs=None,
                             " AND rule='id3v1_conflict'", (tid,))
                 changes.setdefault("_id3v1", ["remove"])
                 origin.setdefault("_id3v1", "rule")
+        # same for an applied 'use the APEv2 value' proposal
+        if (any(p["rule"] == "apev2_conflict" for p in plist)
+                and settings.get("strip_apev2", True)):
+            snap = db.latest_snapshot(con, tid)
+            tags = snap["tags"] if snap else {}
+            updated = dict(tags)
+            for f, v in changes.items():
+                if f != "cover" and f not in tagio.PSEUDO_FIELDS:
+                    updated[f] = v
+            if tags.get("_has_ape") and not rules.ape_conflicts(
+                    tags.get("_ape") or {}, updated):
+                con.execute("DELETE FROM issues WHERE track_id=?"
+                            " AND rule='apev2_conflict'", (tid,))
+                changes.setdefault("_apev2", ["remove"])
+                origin.setdefault("_apev2", "rule")
         try:
             n_changes += _write_track(con, settings, batch_id, tid, path,
                                       changes, origin)
@@ -248,6 +275,11 @@ def revert_album(con, settings, album_dir, batch_id, progress=None):
         if tgt.get("_has_v1") and tgt.get("_v1") and not current.get("_has_v1"):
             keep_v1 = tagio.build_id3v1(tgt["_v1"])
             changes.setdefault("_id3v1", ["restore"])
+        # restore a removed APEv2 tag from its recorded contents
+        keep_ape = None
+        if tgt.get("_has_ape") and tgt.get("_ape") and not current.get("_has_ape"):
+            keep_ape = tgt["_ape"]
+            changes.setdefault("_apev2", ["restore"])
         # restore a replaced cover if the old picture was remembered
         def _cov_sig(tags):
             return [(c.get("bytes"), c.get("w"), c.get("h"))
@@ -262,7 +294,8 @@ def revert_album(con, settings, album_dir, batch_id, progress=None):
             n_changes += _write_track(con, settings, new_batch, tid, path, changes,
                                       {f: "revert" for f in changes},
                                       reason="reverted",
-                                      keep_v1=keep_v1 if keep_v1 else "auto")
+                                      keep_v1=keep_v1 if keep_v1 else "auto",
+                                      keep_ape=keep_ape)
             n_files += 1
         except Exception as e:
             errors.append((path, str(e)))
@@ -287,6 +320,27 @@ def resolve_v1_keep_v2(con, settings, entries):
                     " VALUES (?,?)", (e["track_id"], db.now()))
         con.execute("DELETE FROM proposals WHERE track_id=? AND"
                     " rule='id3v1_conflict' AND status IN"
+                    " ('pending','edited','postponed','needs_input')",
+                    (e["track_id"],))
+        if e.get("album_dir"):
+            albums.add(e["album_dir"])
+    con.commit()
+    if albums:
+        rules.evaluate(con, settings, album_dirs=list(albums))
+
+
+def resolve_ape_keep_v2(con, settings, entries):
+    """User chose 'keep ID3v2' for APEv2/v2 conflicts. Same lightweight marker
+    as resolve_v1_keep_v2 - the APEv2 tag becomes removable and the marker
+    clears itself once the tag is really gone."""
+    albums = set()
+    for e in entries:
+        if e.get("rule") != "apev2_conflict" or not e.get("track_id"):
+            continue
+        con.execute("INSERT OR IGNORE INTO ape_keep_v2(track_id, created_at)"
+                    " VALUES (?,?)", (e["track_id"], db.now()))
+        con.execute("DELETE FROM proposals WHERE track_id=? AND"
+                    " rule='apev2_conflict' AND status IN"
                     " ('pending','edited','postponed','needs_input')",
                     (e["track_id"],))
         if e.get("album_dir"):

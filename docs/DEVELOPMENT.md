@@ -82,6 +82,7 @@ Defined in `mp3lib/db.py`:
 | `exceptions` | user-declared "stop flagging this" records |
 | `changelog` | every field ever written: old → new, when, why |
 | `v1_keep_v2` | bookkeeping for the ID3v1/v2 conflict flow |
+| `ape_keep_v2` | bookkeeping for the APEv2/v2 conflict flow |
 
 ## Invariants (do not break these)
 
@@ -93,7 +94,9 @@ Defined in `mp3lib/db.py`:
   which creates changelog entries and re-runs the rules.
 - **An unresolved ID3v1/v2 conflict blocks destruction of the v1 tag**:
   `applier._write_track` re-attaches the original ID3v1 block until the user
-  resolves the conflict.
+  resolves the conflict. The APEv2/v2 conflict flow mirrors this — an
+  unresolved APEv2 conflict makes `_write_track` keep the APEv2 block (never
+  strips it) until resolved.
 - **Mojibake repair only on hard evidence.** Invisible C1 control characters
   (U+0080–U+009F) are the only trigger for the cp1250-as-cp1252 repair;
   printable letters (è, ø, å, …) are legitimate text in other languages and

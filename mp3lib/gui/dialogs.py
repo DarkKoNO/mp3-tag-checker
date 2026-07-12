@@ -687,6 +687,12 @@ class SettingsPane(QWidget):
             bool(s["strip_id3v1"]),
             "Whether writing a file removes its leftover ID3v1 tag (only ever"
             " done after the content check passes)")
+        self.rule_opts["apev2"] = _opt_combo(
+            [("remove the APEv2 tag when writing", True),
+             ("keep the APEv2 tag in the file", False)],
+            bool(s.get("strip_apev2", True)),
+            "Whether writing a file removes its foreign APEv2 tag (only ever"
+            " done after the content check passes)")
         self.rule_opts["encoding"] = _opt_combo(
             [("re-encode all text as UTF-8 when writing", True),
              ("keep existing encodings", False)],
@@ -1266,6 +1272,7 @@ class SettingsPane(QWidget):
         s["track_pad"], s["track_totals"], s["track_pad_total"] = pad, totals, padtot
         s["albumartist_mode"] = self.rule_opts["albumartist"].currentData()
         s["strip_id3v1"] = self.rule_opts["id3v1"].currentData()
+        s["strip_apev2"] = self.rule_opts["apev2"].currentData()
         s["utf8_all_frames"] = self.rule_opts["encoding"].currentData()
         s["sync_artist_albumartist"] = self.rule_opts["artist_sync"].currentData()
         s["theme"] = self.theme_combo.currentData() or "auto"

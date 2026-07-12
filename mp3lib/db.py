@@ -131,6 +131,9 @@ def _migrate(con):
         con.execute("INSERT OR IGNORE INTO v1_keep_v2(track_id, created_at)"
                     " VALUES (?,?)", (tid, now()))
     con.execute("DELETE FROM exceptions WHERE rule='id3v1_conflict'")
+    # same lightweight "keep ID3v2" marker for the APEv2/v2 conflict flow
+    con.execute("CREATE TABLE IF NOT EXISTS ape_keep_v2("
+                "track_id INTEGER PRIMARY KEY, created_at TEXT)")
     con.commit()
 
 
@@ -345,6 +348,7 @@ def remove_scope(con, artist_folders=None, album_dirs=None, track_ids=None):
         con.execute("DELETE FROM proposals WHERE track_id IN (%s)" % qs, list(tids))
         con.execute("DELETE FROM issues WHERE track_id IN (%s)" % qs, list(tids))
         con.execute("DELETE FROM v1_keep_v2 WHERE track_id IN (%s)" % qs, list(tids))
+        con.execute("DELETE FROM ape_keep_v2 WHERE track_id IN (%s)" % qs, list(tids))
         con.execute("DELETE FROM tracks WHERE id IN (%s)" % qs, list(tids))
     if adirs:
         qs = ",".join("?" * len(adirs))

@@ -22,6 +22,8 @@ Jakub Konopásek.
     evidence, never by guessing
   - legacy ID3v1 tags: safe removal, rescue of data missing from ID3v2, and
     conflict detection when the two tags disagree
+  - foreign APEv2 tags (appended by some rippers and by MP3Gain): the same
+    safe-removal / rescue / conflict flow as ID3v1
   - old ID3v2 versions and non-UTF-8 text encodings
   - missing required fields (title, artist, album, track, year, genre, …)
   - track-number format, gaps in track numbering
@@ -78,8 +80,8 @@ contribute.
 - Writes happen only when you click Apply, and each one is snapshotted
   beforehand and logged, so it can be reverted.
 - File modification times are preserved on write (configurable).
-- An unresolved ID3v1/ID3v2 conflict blocks any write that would destroy the
-  old tag's data.
+- An unresolved ID3v1/ID3v2 (or APEv2/ID3v2) conflict blocks any write that
+  would destroy the old tag's data.
 
 ## Requirements
 

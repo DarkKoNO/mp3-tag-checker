@@ -28,6 +28,9 @@ RULE_LABELS = {
     "id3v1": "Remove old ID3v1 tag",
     "id3v1_conflict": "Old ID3v1 tag disagrees with ID3v2",
     "v1_rescue": "Rescue data from old ID3v1 tag",
+    "apev2": "Remove foreign APEv2 tag",
+    "apev2_conflict": "APEv2 tag disagrees with ID3v2",
+    "apev2_rescue": "Rescue data from APEv2 tag",
     "id3_version": "Upgrade to ID3v2.4",
     "encoding": "Re-encode text as UTF-8",
     "artist_superset": "Artist should include the album artist",
@@ -53,13 +56,14 @@ RULE_LABELS = {
 }
 RULE_SEVERITY = {
     "mojibake": RED, "album_inconsistent": RED, "cover_missing": RED,
-    "track_gaps": RED, "id3v1_conflict": RED, "value_format": RED,
+    "track_gaps": RED, "id3v1_conflict": RED, "apev2_conflict": RED,
+    "value_format": RED,
     "missing_title": RED, "missing_artist": RED, "missing_album": RED,
     "missing_track": RED,
 }
 # issue rules with no automatic fix -> shown under "needs attention"
 NON_FIXABLE = {"cover_missing", "cover_tiny", "track_gaps", "year_inconsistent",
-               "artist_jpg", "id3v1_conflict", "plus_collab"}
+               "artist_jpg", "id3v1_conflict", "apev2_conflict", "plus_collab"}
 
 # Fixed workflow order of the problem types in the change-type tree: things
 # that should be resolved first (later rules depend on clean text/structure)
@@ -67,6 +71,7 @@ NON_FIXABLE = {"cover_missing", "cover_tiny", "track_gaps", "year_inconsistent",
 # when counts change after applying.
 RULE_PRIORITY = [
     "v1_rescue", "id3v1_conflict", "id3v1",
+    "apev2_rescue", "apev2_conflict", "apev2",
     "id3_version", "encoding", "mojibake",
     "missing",                      # missing_<field> rules share this slot
     "value_format", "track_format",
@@ -121,6 +126,33 @@ RULE_DESCRIPTIONS = {
         " tag. The proposal copies that value into ID3v2 so it is not lost."
         " The old ID3v1 tag is then removed together with the write (if"
         " 'Remove old ID3v1 tags' is enabled).",
+    "apev2":
+        "An APEv2 tag is a separate block of metadata that some old rippers,"
+        " taggers and tools like MP3Gain append to MP3 files. Modern players"
+        " read ID3v2, not this block, so it is a hidden second copy of the"
+        " metadata that can quietly disagree with what you see.\n\n"
+        "This app treats ID3v2 as the authoritative tag and proposes deleting"
+        " the APEv2 leftover - handled exactly like an old ID3v1 tag. Removal"
+        " is only offered after checking that every metadata value in the APEv2"
+        " block is also present in ID3v2, so nothing you track is lost. (Note:"
+        " non-metadata APEv2 entries such as MP3Gain replay-gain values are not"
+        " tracked and are removed with the block.)",
+    "apev2_conflict":
+        "The file has an APEv2 tag whose value for a field DIFFERS from the"
+        " modern ID3v2 tag. ID3v2 is the CURRENT value - what players show and"
+        " what the 'Current' column displays; the APEv2 value is the other"
+        " one.\n\n"
+        "The APEv2 tag is never removed while such a difference is unresolved."
+        " To resolve it, either right-click the row and choose 'Keep ID3v2"
+        " value' (the current value stays, the APEv2 tag becomes removable),"
+        " or apply the offered proposal to copy the APEv2 value into ID3v2."
+        " When you apply the APEv2 value, the tag is removed in the same write"
+        " (if 'Remove foreign APEv2 tags' is enabled), so one apply does both.",
+    "apev2_rescue":
+        "The APEv2 tag contains a value (e.g. a year or a comment) that is"
+        " completely MISSING in the modern ID3v2 tag. The proposal copies that"
+        " value into ID3v2 so it is not lost. The APEv2 tag is then removed"
+        " together with the write (if 'Remove foreign APEv2 tags' is enabled).",
     "id3_version":
         "The file uses an older ID3v2 sub-version (2.2 or 2.3). This app"
         " writes tags in the current standard, ID3v2.4, which supports UTF-8"
@@ -252,12 +284,14 @@ RULE_DESCRIPTIONS = {
 #                skips them until you 'Restore' a row yourself
 #  'disabled'  = not detected, not shown anywhere
 RULE_MODES = ("enabled", "postponed", "disabled")
-DEFAULT_RULE_MODES = {"id3v1_conflict": "postponed"}
+DEFAULT_RULE_MODES = {"id3v1_conflict": "postponed",
+                      "apev2_conflict": "postponed"}
 # rules the user can switch in Settings ('missing' covers every missing_<field>
 # rule; online / manual / cover have their own controls elsewhere)
 CONFIGURABLE_RULES = [
     "mojibake", "value_format", "album_inconsistent", "track_gaps", "missing",
-    "cover_missing", "id3v1", "id3v1_conflict", "v1_rescue", "id3_version",
+    "cover_missing", "id3v1", "id3v1_conflict", "v1_rescue",
+    "apev2", "apev2_conflict", "apev2_rescue", "id3_version",
     "encoding", "track_format", "single_value", "multi_split", "albumartist",
     "artist_superset", "artist_sync", "plus_collab", "publisher_from_comment",
     "year_inconsistent", "cover_tiny", "folder_jpg", "artist_jpg",
@@ -426,6 +460,42 @@ def v1_conflicts(v1, tags):
         if not any(c.casefold().startswith(v.casefold())
                    for v in _v1_variants(v1v) for c in cands):
             out.append((field, v1v, " | ".join(v2list)))
+    return out
+
+
+APE_FIELDS = ("title", "artist", "albumartist", "album", "year",
+              "comment", "composer", "track", "disc", "genre")
+
+
+def ape_conflicts(ape, tags):
+    """[(field, ape_values, v2_display)] where the APEv2 tag disagrees with
+    ID3v2. Unlike ID3v1, APEv2 stores full-length UTF-8 text, so the match is
+    exact (not prefix-based); it stays multi-value aware."""
+    out = []
+    for field in APE_FIELDS:
+        apv = [str(v).strip() for v in (ape.get(field) or []) if str(v).strip()]
+        if not apv:
+            continue
+        v2list = [str(v) for v in (tags.get(field) or []) if str(v).strip()]
+        if not v2list:
+            continue        # only in APEv2 -> handled by the rescue rule
+        if field == "genre":
+            if {a.casefold() for a in apv} - {g.casefold() for g in v2list}:
+                out.append((field, apv, " | ".join(v2list)))
+            continue
+        if field in ("track", "disc"):
+            # compare the leading numbers, ignoring any '/total' either side
+            n2, _r2 = parse_track(v2list)
+            na, _ra = parse_track(apv)
+            if n2 != na:
+                out.append((field, apv, v2list[0]))
+            continue
+        cands = {v2list[0], " / ".join(v2list), "/".join(v2list),
+                 "; ".join(v2list), " ".join(v2list)}
+        cand_cf = {c.casefold() for c in cands}
+        if (" / ".join(apv).casefold() not in cand_cf
+                and apv[0].casefold() not in cand_cf):
+            out.append((field, apv, " | ".join(v2list)))
     return out
 
 
@@ -643,6 +713,50 @@ def evaluate(con, settings, artist_folders=None, album_dirs=None):
                     propose(tid, artist, adir, "_id3v1",
                             ["present — all info preserved in ID3v2"], ["remove"],
                             "id3v1")
+
+            # -- foreign APEv2 tag: verified before removal is proposed
+            # (same flow as the ID3v1 leftover above)
+            ape = tags.get("_ape") or {}
+            if not tags.get("_has_ape"):
+                con.execute("DELETE FROM ape_keep_v2 WHERE track_id=?", (tid,))
+            if tags.get("_has_ape") and settings.get("strip_apev2", True):
+                ape_conf = (ape_conflicts(ape, tags)
+                            if rule_mode(settings, "apev2_conflict") != "disabled"
+                            else [])
+                chose_v2_ape = con.execute(
+                    "SELECT 1 FROM ape_keep_v2 WHERE track_id=?",
+                    (tid,)).fetchone() is not None
+                ape_rescues = [f for f in APE_FIELDS
+                               if ape.get(f) and not tags.get(f)]
+                if ape_conf and not chose_v2_ape:
+                    issue(tid, artist, adir, "apev2_conflict", RED,
+                          "%s: APEv2 tag disagrees with ID3v2 (the current tag)"
+                          " — resolve before removal: %s"
+                          % (t["file"], "; ".join(
+                              "%s: APEv2='%s' vs current v2='%s'"
+                              % (f, " | ".join(av), v2v)
+                              for f, av, v2v in ape_conf)))
+                    # per-field "use APEv2" offers are created at the end of the
+                    # track (after mojibake etc.), so they never displace a fix
+                    t["_ape_offers"] = ape_conf
+                elif ape_conf and chose_v2_ape:
+                    issue(tid, artist, adir, "apev2", YEL,
+                          "%s: APEv2 tag differs — decision made: ID3v2 stays,"
+                          " the APEv2 tag will be removed" % t["file"])
+                    propose(tid, artist, adir, "_apev2",
+                            ["differs — ID3v2 stays"], ["remove"], "apev2")
+                elif ape_rescues:
+                    issue(tid, artist, adir, "apev2", YEL,
+                          "%s: APEv2 tag holds data missing in ID3v2 (%s) — it is"
+                          " removed together with writing the rescued data"
+                          % (t["file"], ", ".join(ape_rescues)))
+                else:
+                    issue(tid, artist, adir, "apev2", YEL,
+                          "%s: APEv2 tag — checked, all its information is"
+                          " preserved in ID3v2" % t["file"])
+                    propose(tid, artist, adir, "_apev2",
+                            ["present — all info preserved in ID3v2"], ["remove"],
+                            "apev2")
             if tags.get("_version") and tags["_version"] != "2.4":
                 issue(tid, artist, adir, "id3_version", YEL,
                       "%s: ID3v%s (will be upgraded to 2.4)" % (t["file"], tags["_version"]))
@@ -666,6 +780,15 @@ def evaluate(con, settings, artist_folders=None, album_dirs=None):
                           "%s: %s '%s' exists only in the old ID3v1 tag"
                           % (t["file"], field, v1[field][0]))
                     propose(tid, artist, adir, field, [], v1[field], "v1_rescue")
+
+            # -- data that exists ONLY in the APEv2 tag: rescue it into v2
+            for field in APE_FIELDS:
+                if ape.get(field) and not tags.get(field):
+                    issue(tid, artist, adir, "apev2_rescue", YEL,
+                          "%s: %s '%s' exists only in the APEv2 tag"
+                          % (t["file"], field, ape[field][0]))
+                    propose(tid, artist, adir, field, [], ape[field],
+                            "apev2_rescue")
 
             # -- mojibake repair + splitting combined multi-values
             for field in TEXTUAL_FIELDS:
@@ -768,6 +891,21 @@ def evaluate(con, settings, artist_folders=None, album_dirs=None):
                                  " the old v1 value (the old tag is removed in"
                                  " the same step), or right-click → keep ID3v2"
                                  % (v1v, v2v))
+
+            # -- per-field "use the APEv2 value" offers (same rules as v1)
+            for field, apv, v2v in t.pop("_ape_offers", []):
+                row = con.execute(
+                    "SELECT rule FROM proposals WHERE track_id=? AND field=?"
+                    " AND status IN ('pending','edited','postponed','needs_input')"
+                    " LIMIT 1", (tid, field)).fetchone()
+                if row is None or row[0] == "apev2_conflict":
+                    propose(tid, artist, adir, field,
+                            tags.get(field, []), apv, "apev2_conflict",
+                            note="APEv2 tag says '%s'; ID3v2 (the current tag)"
+                                 " says '%s' — apply this proposal to use the"
+                                 " APEv2 value (the tag is removed in the same"
+                                 " step), or right-click → keep ID3v2"
+                                 % (" | ".join(apv), v2v))
 
             # -- required fields still without any proposal -> ask for input
             for field in required:

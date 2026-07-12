@@ -114,8 +114,10 @@ class DetailPanel(QWidget):
     def _refresh_btn(self, artists=None, albums=None):
         b = QPushButton("Rescan")
         b.setToolTip("Re-read the shown files from disk and re-run all checks"
-                     " — the same as 'Scan library' limited to what you see"
-                     " here")
+                     " — a full re-read (every file, even unchanged ones), so"
+                     " newly added checks are picked up; the same as 'Scan"
+                     " library' with 'Re-read all files' ticked, limited to"
+                     " what you see here")
         b.clicked.connect(lambda: self.owner.rescan_scope(
             artist_folders=artists, album_dirs=albums))
         return b
@@ -1257,6 +1259,13 @@ class DetailPanel(QWidget):
                                self._restore_selected)
             menu.addAction("Keep ID3v2 value && allow removing the old tag",
                            self._keep_v2_selected)
+        if any(e.get("rule") == "apev2_conflict" for e in entries):
+            menu.addSeparator()
+            if postponed:
+                menu.addAction("Use APEv2 value (removes its postpone)",
+                               self._restore_selected)
+            menu.addAction("Keep ID3v2 value && allow removing the APEv2 tag",
+                           self._keep_v2_ape_selected)
         menu.exec(self.entry_tree.viewport().mapToGlobal(pos))
 
     def _delete_selected(self):
@@ -1280,6 +1289,15 @@ class DetailPanel(QWidget):
         if not entries:
             return
         applier.resolve_v1_keep_v2(self.con, self.cfg["settings"], entries)
+        self.refresh()
+        self.owner.refresh_tree()
+
+    def _keep_v2_ape_selected(self):
+        entries = [e for e in self._selected_entries()
+                   if e.get("rule") == "apev2_conflict"]
+        if not entries:
+            return
+        applier.resolve_ape_keep_v2(self.con, self.cfg["settings"], entries)
         self.refresh()
         self.owner.refresh_tree()
 

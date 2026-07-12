@@ -1,6 +1,15 @@
 {
-  "version": "1.3.0",
+  "version": "1.4.0",
   "changelog": [
+    {
+      "version": "1.4.0",
+      "date": "2026-07-11",
+      "changes": [
+        "APEv2 tags: MP3s that carry a foreign APEv2 tag (appended by some old rippers and by MP3Gain) are now detected and handled exactly like a leftover ID3v1 tag. The APEv2 block is checked against ID3v2 — if every metadata value matches, its removal is proposed; if a value differs, a conflict is shown and you can either copy the APEv2 value into ID3v2 or keep the ID3v2 value; a value found only in APEv2 is rescued into ID3v2. The tag is removed in the same write that resolves it.",
+        "New 'Remove foreign APEv2 tags' option (Settings → Problem types, Options column) mirrors the ID3v1 switch — off keeps the APEv2 block untouched. History revert restores a removed APEv2 tag.",
+        "The album/artist 'Rescan' button now always does a full re-read (every file, even unchanged ones) so newly added checks like APEv2 are picked up without needing a full library scan."
+      ]
+    },
     {
       "version": "1.3.0",
       "date": "2026-07-08",

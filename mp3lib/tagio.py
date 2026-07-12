@@ -9,7 +9,9 @@ import os
 from collections import Counter
 from io import BytesIO
 
+import mutagen.apev2
 import mutagen.id3
+from mutagen.apev2 import APEv2, APENoHeaderError
 from mutagen.id3 import APIC, COMM
 from mutagen.mp3 import MP3
 from PIL import Image
@@ -73,7 +75,26 @@ FIELD_FRAMES = {
 EDITABLE_FIELDS = list(FIELD_FRAMES)
 PRIMARY_FIELDS = EDITABLE_FIELDS[:9]
 # pseudo fields carried in proposals; applying them = "just rewrite the file"
-PSEUDO_FIELDS = {"_id3v1", "_version", "_encoding"}
+PSEUDO_FIELDS = {"_id3v1", "_apev2", "_version", "_encoding"}
+
+# APEv2 tags (a foreign block many old rippers / MP3Gain append to MP3s) use
+# free-text, case-insensitive keys. Map the standard ones onto our field names
+# so an APEv2 leftover is compared against ID3v2 the same way ID3v1 is. Keys
+# are matched case-folded; the first key that maps to a field wins.
+APEV2_TO_FIELD = {
+    "title": "title", "artist": "artist",
+    "album artist": "albumartist", "albumartist": "albumartist",
+    "album": "album", "track": "track", "tracknumber": "track",
+    "disc": "disc", "discnumber": "disc",
+    "year": "year", "date": "year",
+    "genre": "genre", "comment": "comment", "composer": "composer",
+}
+# canonical APEv2 key for each of our fields (used to rebuild a tag on revert)
+FIELD_TO_APEV2 = {
+    "title": "Title", "artist": "Artist", "albumartist": "Album Artist",
+    "album": "Album", "track": "Track", "disc": "Disc", "year": "Year",
+    "genre": "Genre", "comment": "Comment", "composer": "Composer",
+}
 
 ENC_NAMES = {0: "latin-1", 1: "utf-16", 2: "utf-16be", 3: "utf-8"}
 
@@ -165,6 +186,44 @@ def read_id3v1(path):
     return out or None
 
 
+def read_apev2(path):
+    """Parse an APEv2 tag appended to the file, if present.
+    Returns {field: [values]} with only the mapped, non-empty text fields
+    (our field names, not the raw APEv2 keys), or None. Non-text values
+    (binary, replay-gain, custom keys we don't map) are ignored - they carry
+    no metadata we track, so they never block removal."""
+    try:
+        tag = APEv2(path)
+    except APENoHeaderError:
+        return None
+    except Exception:
+        return None
+    out = {}
+    for key in tag.keys():
+        field = APEV2_TO_FIELD.get(key.strip().casefold())
+        if not field or field in out:
+            continue
+        val = tag[key]
+        if getattr(val, "kind", 0) != 0:        # 0 = text; skip binary/other
+            continue
+        vals = [str(s).strip() for s in list(val) if str(s).strip()]
+        if vals:
+            out[field] = vals
+    return out or None
+
+
+def build_apev2(path, ape):
+    """(Re)write an APEv2 tag onto the file from the dict read_apev2() produced.
+    Used by history revert to restore a previously removed APEv2 tag."""
+    tag = APEv2()
+    for field, key in FIELD_TO_APEV2.items():
+        vals = [str(v) for v in (ape.get(field) or []) if str(v).strip()]
+        if vals:
+            tag[key] = vals
+    if len(tag):
+        tag.save(path)
+
+
 def _main_comm(tags):
     """The primary comment frame (empty description), if any."""
     frames = tags.getall("COMM")
@@ -188,6 +247,11 @@ def read_tags(path):
         # full ID3v1 content is kept in every snapshot, so even after the v1
         # tag is stripped its data stays in the database history forever
         t["_v1"] = v1
+    ape = read_apev2(path)
+    t["_has_ape"] = ape is not None
+    if ape:
+        # like _v1: kept in every snapshot so a removed APEv2 tag stays in history
+        t["_ape"] = ape
     for field, fid in FIELD_FRAMES.items():
         if tags is None:
             t[field] = []
@@ -242,13 +306,18 @@ def get_cover_data(path):
     return best.mime, best.data
 
 
-def write_changes(path, changes, settings, keep_v1_bytes=None):
+def write_changes(path, changes, settings, keep_v1_bytes=None,
+                  strip_ape=None, keep_ape_data=None):
     """Apply field changes to one file and save as ID3v2.4/UTF-8.
 
     changes: field -> list[str] for text fields, or ('cover', (mime, bytes)).
-    Pseudo fields (_id3v1, _version) force a rewrite without a field change.
+    Pseudo fields (_id3v1, _apev2, _version) force a rewrite without a field
+    change.
     keep_v1_bytes: raw 128-byte ID3v1 block to preserve verbatim (used while
     an unresolved v1/v2 conflict exists, so the old tag is never lost).
+    strip_ape: None = follow settings['strip_apev2']; True/False = force.
+    keep_ape_data: {field: [values]} to (re)write an APEv2 tag (history revert);
+    when given, the tag is restored instead of stripped.
     Returns list of (field, old_list, new_list) actually written.
     """
     st = os.stat(path) if settings.get("preserve_file_times", True) else None
@@ -299,6 +368,17 @@ def write_changes(path, changes, settings, keep_v1_bytes=None):
     if keep_v1_bytes:
         v1 = 0                      # remove, then re-append the original block
     audio.save(v1=v1, v2_version=4)
+    # APEv2 is a separate block at the end of the file that saving ID3 leaves
+    # untouched, so it has to be handled explicitly. Do it before re-appending
+    # any ID3v1 block so the on-disk order stays [audio][APEv2][ID3v1].
+    strip = settings.get("strip_apev2", True) if strip_ape is None else strip_ape
+    if keep_ape_data is not None:
+        build_apev2(path, keep_ape_data)
+    elif strip:
+        try:
+            mutagen.apev2.delete(path)
+        except Exception:
+            pass
     if keep_v1_bytes:
         with open(path, "ab") as f:
             f.write(keep_v1_bytes)

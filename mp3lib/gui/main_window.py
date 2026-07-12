@@ -889,8 +889,11 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("Removed %s from the library." % what)
 
     def rescan_scope(self, artist_folders=None, album_dirs=None):
-        """Bottom-row 'Refresh': re-read the shown files from disk and re-run
-        all checks — the same as 'Start check' limited to this scope."""
+        """Bottom-row 'Rescan': re-read the shown files from disk and re-run
+        all checks — the same as 'Start check' limited to this scope. Always a
+        FULL re-read (full=True) so newly tracked fields (e.g. APEv2 state) are
+        picked up even when a file's size/mtime is unchanged; the scope is small
+        (one album/artist), so the cost is negligible."""
         if self.lib is None:
             return
         root = self.lib.get("root", "")
@@ -911,7 +914,7 @@ class MainWindow(QMainWindow):
         entries = sorted(artists)
         self._run_worker(
             lambda con, prog: scanner.scan(con, settings, root, entries,
-                                           progress=prog),
+                                           progress=prog, full=True),
             "Refreshing…", self._rescan_done)
 
     def _rescan_done(self, res):

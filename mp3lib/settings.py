@@ -229,6 +229,7 @@ DEFAULT_SETTINGS = {
     "theme": "auto",              # 'auto' = follow Windows, 'dark', 'light'
     # writing standard
     "strip_id3v1": True,          # remove old ID3v1 tag on every write
+    "strip_apev2": True,          # remove foreign APEv2 tag on every write
     "utf8_all_frames": True,      # re-encode all text frames as UTF-8 on write
     "preserve_file_times": True,  # keep 'date modified' when only tags change
     # track numbers
