@@ -81,8 +81,8 @@ Defined in `mp3lib/db.py`:
 | `pending_covers` | covers fetched online, awaiting apply |
 | `exceptions` | user-declared "stop flagging this" records |
 | `changelog` | every field ever written: old → new, when, why |
-| `v1_keep_v2` | bookkeeping for the ID3v1/v2 conflict flow |
-| `ape_keep_v2` | bookkeeping for the APEv2/v2 conflict flow |
+| `v1_keep_v2` | per-(track, field) "keep ID3v2" decisions for the ID3v1/v2 conflict flow |
+| `ape_keep_v2` | per-(track, field) "keep ID3v2" decisions for the APEv2/v2 conflict flow |
 
 ## Invariants (do not break these)
 

@@ -3,6 +3,24 @@
 Nothing in this folder is needed to run the MP3 Tag Checker.
 Do not copy it when giving the application to someone.
 
+## ⚠️ Tests must never touch your real config or libraries
+
+The app stores user data (config.json, themes.json, library databases) in
+**`DATA_DIR`**, which defaults to the app folder but is overridden by the
+**`MP3TAGGER_DATA_DIR`** environment variable (see `mp3lib/settings.py`).
+
+Any test that builds the GUI or calls `save_config` WILL overwrite the real
+`config.json` unless the data dir is redirected. Every `*_test.py` here does
+`import _isolate` right after the `sys.path` setup, which points
+`MP3TAGGER_DATA_DIR` at a throwaway temp dir before `mp3lib` is imported.
+
+For ad-hoc snippets, set it yourself, e.g.:
+
+    MP3TAGGER_DATA_DIR=$(mktemp -d) QT_QPA_PLATFORM=offscreen \
+        ../.venv/Scripts/python.exe -c "..."
+
+`_isolate.py` is the shared helper that does this — import it first.
+
 ## Contents
 
 - **probe.py** — legacy read-only diagnostic from the start of the project.

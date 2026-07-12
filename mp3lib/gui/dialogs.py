@@ -79,6 +79,16 @@ class ScanDialog(QDialog):
                                  " app updates that track new fields)")
         lay.addWidget(self.full_cb)
 
+        self.autoremove_cb = QCheckBox(
+            "Automatically remove whole gone albums from the library")
+        self.autoremove_cb.setToolTip(
+            "When an album's entire folder no longer exists on disk, its"
+            " database entry is removed during the scan (the files are already"
+            " gone). If only some tracks of an album are missing, nothing is"
+            " removed — those tracks are marked gray instead. Unchecked: even"
+            " whole gone albums are only marked gray, never removed.")
+        lay.addWidget(self.autoremove_cb)
+
         bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         bb.button(QDialogButtonBox.Ok).setText("Start check")
         bb.accepted.connect(self.accept)
@@ -187,6 +197,12 @@ class ScanReportDialog(QDialog):
             lines += ["", "Folders not found under the library root (%d):"
                       % len(missing_folders)]
             lines += ["  %s" % f for f in missing_folders]
+        removed_albums = res.get("removed_albums") or []
+        if removed_albums:
+            lines += ["", "Whole gone albums removed from the library (%d) —"
+                      " their folders no longer exist on disk:"
+                      % len(removed_albums)]
+            lines += ["  %s" % a for a in removed_albums]
         if self.gone:
             lines += ["", "WARNING — files not found on disk (%d), maybe"
                       " renamed, moved or deleted:" % len(self.gone)]
@@ -682,17 +698,25 @@ class SettingsPane(QWidget):
             " tab) is used.\n"
             "keep — never touch the album artist.")
         self.rule_opts["id3v1"] = _opt_combo(
-            [("remove the old tag when writing", True),
-             ("keep the old tag in the file", False)],
-            bool(s["strip_id3v1"]),
-            "Whether writing a file removes its leftover ID3v1 tag (only ever"
-            " done after the content check passes)")
+            [("delay removal until the ID3v1/ID3v2 conflict is resolved", True),
+             ("remove even when it disagrees with ID3v2", False)],
+            bool(s.get("id3v1_delay_on_conflict", True)),
+            "When the old ID3v1 tag DISAGREES with ID3v2, wait until you have"
+            " decided each differing field (use the old value, or keep ID3v2)"
+            " before the tag can be removed. 'Remove even when it disagrees'"
+            " lets removal proceed with ID3v2 winning for anything undecided.\n"
+            "To keep the ID3v1 tag on the file entirely, set this problem type"
+            " to Disabled.")
         self.rule_opts["apev2"] = _opt_combo(
-            [("remove the APEv2 tag when writing", True),
-             ("keep the APEv2 tag in the file", False)],
-            bool(s.get("strip_apev2", True)),
-            "Whether writing a file removes its foreign APEv2 tag (only ever"
-            " done after the content check passes)")
+            [("delay removal until the APEv2/ID3v2 conflict is resolved", True),
+             ("remove even when it disagrees with ID3v2", False)],
+            bool(s.get("apev2_delay_on_conflict", True)),
+            "When the APEv2 tag DISAGREES with ID3v2, wait until you have"
+            " decided each differing field (use the APEv2 value, or keep ID3v2)"
+            " before the tag can be removed. 'Remove even when it disagrees'"
+            " lets removal proceed with ID3v2 winning for anything undecided.\n"
+            "To keep the APEv2 tag on the file entirely, set this problem type"
+            " to Disabled.")
         self.rule_opts["encoding"] = _opt_combo(
             [("re-encode all text as UTF-8 when writing", True),
              ("keep existing encodings", False)],
@@ -1271,8 +1295,8 @@ class SettingsPane(QWidget):
         pad, totals, padtot = self.rule_opts["track_format"].currentData()
         s["track_pad"], s["track_totals"], s["track_pad_total"] = pad, totals, padtot
         s["albumartist_mode"] = self.rule_opts["albumartist"].currentData()
-        s["strip_id3v1"] = self.rule_opts["id3v1"].currentData()
-        s["strip_apev2"] = self.rule_opts["apev2"].currentData()
+        s["id3v1_delay_on_conflict"] = self.rule_opts["id3v1"].currentData()
+        s["apev2_delay_on_conflict"] = self.rule_opts["apev2"].currentData()
         s["utf8_all_frames"] = self.rule_opts["encoding"].currentData()
         s["sync_artist_albumartist"] = self.rule_opts["artist_sync"].currentData()
         s["theme"] = self.theme_combo.currentData() or "auto"
@@ -2215,3 +2239,73 @@ class ArtistImageDialog(QDialog):
         self.saved = True
         QMessageBox.information(self, "Saved", "artist.jpg written to %s" % target)
         self.accept()
+
+
+class ImageViewerDialog(QDialog):
+    """A floating full-resolution image viewer: fit-to-window on open (never
+    overflowing the screen), zoom with the mouse wheel or +/- buttons, the pixel
+    resolution and current zoom shown at the bottom, and a Close button."""
+
+    def __init__(self, pixmap, title="Image", parent=None):
+        super().__init__(parent)
+        from PySide6.QtCore import QTimer
+        self.setWindowTitle(title)
+        self.orig = pixmap
+        self.scale = 1.0
+        lay = QVBoxLayout(self)
+        self.scroll = QScrollArea()
+        self.scroll.setAlignment(Qt.AlignCenter)
+        self.scroll.setWidgetResizable(False)
+        self.img_lbl = QLabel()
+        self.img_lbl.setAlignment(Qt.AlignCenter)
+        self.scroll.setWidget(self.img_lbl)
+        lay.addWidget(self.scroll, 1)
+
+        bar = QHBoxLayout()
+        self.info_lbl = QLabel()
+        bar.addWidget(self.info_lbl)
+        bar.addStretch(1)
+        for text, tip, fn in (
+                ("−", "Zoom out", lambda: self._zoom(1 / 1.25)),
+                ("+", "Zoom in", lambda: self._zoom(1.25)),
+                ("Fit", "Fit the whole image in the window", self._fit)):
+            b = QPushButton(text)
+            b.setToolTip(tip)
+            b.setFixedWidth(44 if text != "Fit" else 56)
+            b.clicked.connect(fn)
+            bar.addWidget(b)
+        close_b = QPushButton("Close")
+        close_b.clicked.connect(self.accept)
+        bar.addWidget(close_b)
+        lay.addLayout(bar)
+
+        avail = QApplication.primaryScreen().availableGeometry()
+        self.resize(min(self.orig.width() + 60, int(avail.width() * 0.9)),
+                    min(self.orig.height() + 96, int(avail.height() * 0.9)))
+        QTimer.singleShot(0, self._fit)     # viewport size known after layout
+
+    def _fit(self):
+        vp = self.scroll.viewport().size()
+        w, h = self.orig.width(), self.orig.height()
+        if w > 0 and h > 0:
+            # scale down to fit; never upscale a small image past 100% on Fit
+            self.scale = min(vp.width() / w, vp.height() / h, 1.0) or 1.0
+        self._apply()
+
+    def _zoom(self, factor):
+        self.scale = max(0.05, min(self.scale * factor, 8.0))
+        self._apply()
+
+    def _apply(self):
+        w = max(1, int(round(self.orig.width() * self.scale)))
+        h = max(1, int(round(self.orig.height() * self.scale)))
+        pm = self.orig.scaled(w, h, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        self.img_lbl.setPixmap(pm)
+        self.img_lbl.resize(pm.size())
+        self.info_lbl.setText("%d × %d px    ·    %d%%"
+                              % (self.orig.width(), self.orig.height(),
+                                 round(self.scale * 100)))
+
+    def wheelEvent(self, ev):
+        self._zoom(1.25 if ev.angleDelta().y() > 0 else 1 / 1.25)
+        ev.accept()

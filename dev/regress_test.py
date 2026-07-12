@@ -9,6 +9,10 @@ import tempfile
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
 
+# isolate user data (config/themes/databases) in a temp dir - never the real one
+os.environ.setdefault("MP3TAGGER_DATA_DIR",
+                      tempfile.mkdtemp(prefix="mp3tagger-test-"))
+
 from mutagen.id3 import ID3, TALB, TIT2, TPE1, TPE2, TRCK
 
 from mp3lib import applier, db, rules, tagio

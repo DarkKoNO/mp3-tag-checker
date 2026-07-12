@@ -12,6 +12,12 @@ import tempfile
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
 
+# isolate ALL user data (config, themes, databases) in a throwaway temp dir so
+# a test can never read or write the real config.json / libraries. Must be set
+# before mp3lib.settings is imported.
+os.environ.setdefault("MP3TAGGER_DATA_DIR",
+                      tempfile.mkdtemp(prefix="mp3tagger-test-"))
+
 from mp3lib import applier, db, rules, tagio
 from mp3lib.settings import DEFAULT_SETTINGS
 

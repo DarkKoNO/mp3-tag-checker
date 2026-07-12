@@ -69,9 +69,13 @@ def collect(root: Path, entries):
     return files, missing, artist_facts, album_facts, errors
 
 
-def scan(con, settings, root, entries, progress=None, full=False, workers=8):
+def scan(con, settings, root, entries, progress=None, full=False, workers=8,
+         auto_remove_gone=False):
     """Incremental scan of `entries` folders under `root`.
-    progress(done, total, text). Returns summary dict."""
+    progress(done, total, text). Returns summary dict.
+    auto_remove_gone: when an album's whole folder no longer exists on disk,
+    remove its database entry (files already gone). Albums that merely lost some
+    tracks are never removed — those tracks stay in the library marked missing."""
     root = Path(root)
     scan_id = db.new_batch(con, "scan", "%d folders" % len(entries))
 
@@ -154,6 +158,25 @@ def scan(con, settings, root, entries, progress=None, full=False, workers=8):
                     con.execute("UPDATE tracks SET missing=1 WHERE id=?", (tid,))
                 gone.append((tid, p))
 
+    # whole gone albums: the folder itself no longer exists -> optional removal.
+    # Partial-missing albums (folder still there, some tracks gone) are kept and
+    # left marked missing, so they show up gray instead of silently disappearing.
+    removed_albums = []
+    if auto_remove_gone and gone:
+        gone_albums = {r[0] for r in con.execute(
+            "SELECT DISTINCT album_dir FROM tracks WHERE missing=1 AND"
+            " artist_folder IN (%s)" % ",".join("?" * len(scanned_artists)),
+            scanned_artists)} if scanned_artists else set()
+        for adir in gone_albums:
+            if not Path(adir).is_dir():          # the whole album folder is gone
+                removed_albums.append(adir)
+        if removed_albums:
+            db.remove_scope(con, album_dirs=removed_albums)
+            # those tracks are gone from the DB now: drop them from the manual
+            # "remove deleted files" offer so it does not double-count them
+            gone = [(tid, p) for tid, p in gone if con.execute(
+                "SELECT 1 FROM tracks WHERE id=?", (tid,)).fetchone()]
+
     db.finish_batch(con, scan_id, len(files))
     con.commit()
 
@@ -163,4 +186,5 @@ def scan(con, settings, root, entries, progress=None, full=False, workers=8):
     con.commit()
 
     return {"scan_id": scan_id, "files": len(files), "read": n_read, "new": n_new,
-            "missing_folders": missing, "errors": errors, "gone": gone}
+            "missing_folders": missing, "errors": errors, "gone": gone,
+            "removed_albums": removed_albums}

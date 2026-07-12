@@ -307,7 +307,7 @@ def get_cover_data(path):
 
 
 def write_changes(path, changes, settings, keep_v1_bytes=None,
-                  strip_ape=None, keep_ape_data=None):
+                  strip_ape=None, keep_ape_data=None, strip_v1=None):
     """Apply field changes to one file and save as ID3v2.4/UTF-8.
 
     changes: field -> list[str] for text fields, or ('cover', (mime, bytes)).
@@ -364,7 +364,8 @@ def write_changes(path, changes, settings, keep_v1_bytes=None,
         for fr in tags.values():
             if hasattr(fr, "encoding"):
                 fr.encoding = 3
-    v1 = 0 if settings.get("strip_id3v1", True) else 1
+    strip1 = settings.get("strip_id3v1", True) if strip_v1 is None else strip_v1
+    v1 = 0 if strip1 else 1
     if keep_v1_bytes:
         v1 = 0                      # remove, then re-append the original block
     audio.save(v1=v1, v2_version=4)

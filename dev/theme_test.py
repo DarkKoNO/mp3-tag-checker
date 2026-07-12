@@ -7,6 +7,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
+import _isolate  # noqa: F401  -- redirect app data to a temp dir (before mp3lib)
 
 from PySide6.QtWidgets import QApplication
 app = QApplication([])

@@ -9,6 +9,10 @@ import tempfile
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
 
+# isolate user data (config/themes/databases) in a temp dir - never the real one
+os.environ.setdefault("MP3TAGGER_DATA_DIR",
+                      tempfile.mkdtemp(prefix="mp3tagger-test-"))
+
 import mutagen.apev2
 from mutagen.apev2 import APEv2, APENoHeaderError
 from mutagen.id3 import ID3, TIT2, TPE1, TALB, TRCK
@@ -163,21 +167,94 @@ check("rescued title written to v2", t3.get("title") == ["Rescued Title"],
       str(t3.get("title")))
 check("APEv2 removed after rescue", t3["_has_ape"] is False)
 
-# ---- 7. 'keep the APEv2 tag' setting: never strip --------------------------
+# ---- 7. 'keep the APEv2 tag': disable the apev2 rule -----------------------
 p4 = os.path.join(adir, "04 - Keep.mp3")
 make_mp3(p4)
 id3(p4, title=["Keep"], artist=["Artist"], album=["Album"], track=["4/4"])
 ape(p4, Title="Keep", Artist="Artist", Album="Album", Track="4/4")
 keep_settings = dict(settings)
-keep_settings["strip_apev2"] = False
+keep_settings["rule_modes"] = {"apev2": "disabled"}
 tid4 = fresh_track(con, p4, adir, "04 - Keep.mp3")
 rules.evaluate(con, keep_settings, album_dirs=[adir])
-check("strip_apev2=off -> no apev2 proposals",
+check("apev2 rule disabled -> no apev2 proposals",
       con.execute("SELECT 1 FROM proposals WHERE track_id=? AND"
                   " rule LIKE 'apev2%'", (tid4,)).fetchone() is None)
 applier.set_manual_proposal(con, tid4, "title", ["Keep Edited"])
 applier.apply_proposals(con, keep_settings, track_ids=[tid4])
-check("APEv2 kept when strip disabled", has_ape(p4) is True)
+check("APEv2 kept when apev2 rule disabled", has_ape(p4) is True)
+
+# ---- 7b. per-field decisions: keep one field, use another ------------------
+# Two differing fields (title, album); user keeps ID3v2 for title, uses APEv2
+# for album. Only the selected field is affected; both independently reversible.
+# own album folder so album-level rules don't claim the 'album' field
+adir5 = os.path.join(tmp, "Artist", "2013 - Fields")
+os.makedirs(adir5)
+p5 = os.path.join(adir5, "05 - Fields.mp3")
+make_mp3(p5)
+id3(p5, title=["V2 Title"], artist=["Artist"], album=["V2 Album"], track=["5/5"])
+ape(p5, Title="Ape Title", Artist="Artist", Album="Ape Album", Track="5/5")
+tid5 = fresh_track(con, p5, adir5, "05 - Fields.mp3")
+rules.evaluate(con, settings, album_dirs=[adir5])
+offers = {r[0]: r[1] for r in con.execute(
+    "SELECT field, id FROM proposals WHERE track_id=? AND rule='apev2_conflict'",
+    (tid5,))}
+check("both differing fields offered", set(offers) == {"title", "album"}, str(offers))
+# keep ID3v2 for title only (simulate selecting just that row)
+applier.set_keep_v2(con, settings, [{"rule": "apev2_conflict", "track_id": tid5,
+                                     "field": "title", "album_dir": adir5}], keep=True)
+check("title marked keep-v2", con.execute(
+    "SELECT 1 FROM ape_keep_v2 WHERE track_id=? AND field='title'",
+    (tid5,)).fetchone() is not None)
+check("album NOT marked (selection scoped)", con.execute(
+    "SELECT 1 FROM ape_keep_v2 WHERE track_id=? AND field='album'",
+    (tid5,)).fetchone() is None)
+# with title decided but album still undecided, removal stays blocked
+check("removal blocked while album undecided", con.execute(
+    "SELECT 1 FROM proposals WHERE track_id=? AND field='_apev2'",
+    (tid5,)).fetchone() is None)
+check("conflict issue still present (album)", con.execute(
+    "SELECT 1 FROM issues WHERE track_id=? AND rule='apev2_conflict'",
+    (tid5,)).fetchone() is not None)
+# use APEv2 value for album, then apply
+applier.use_old_value(con, settings, [{"rule": "apev2_conflict", "track_id": tid5,
+                                       "field": "album", "album_dir": adir5}])
+applier.apply_proposals(con, settings, track_ids=[tid5])
+t5 = tagio.read_tags(p5)
+check("kept field: ID3v2 title preserved", t5.get("title") == ["V2 Title"], str(t5.get("title")))
+check("switched field: APEv2 album written", t5.get("album") == ["Ape Album"], str(t5.get("album")))
+check("APEv2 tag removed once all fields decided", t5["_has_ape"] is False)
+
+# ---- 7c. reversibility: undo a keep-v2 decision ---------------------------
+p6 = os.path.join(adir, "06 - Undo.mp3")
+make_mp3(p6)
+id3(p6, title=["V2 Only"], artist=["Artist"], album=["Album"], track=["6/6"])
+ape(p6, Title="Ape Only", Artist="Artist", Album="Album", Track="6/6")
+tid6 = fresh_track(con, p6, adir, "06 - Undo.mp3")
+rules.evaluate(con, settings, album_dirs=[adir])
+ent = [{"rule": "apev2_conflict", "track_id": tid6, "field": "title", "album_dir": adir}]
+applier.set_keep_v2(con, settings, ent, keep=True)
+check("decided keep-v2 (no blocking issue)", con.execute(
+    "SELECT 1 FROM issues WHERE track_id=? AND rule='apev2_conflict'",
+    (tid6,)).fetchone() is None)
+applier.set_keep_v2(con, settings, ent, keep=False)   # change my mind
+check("undo keep-v2 -> conflict offered again", con.execute(
+    "SELECT 1 FROM issues WHERE track_id=? AND rule='apev2_conflict'",
+    (tid6,)).fetchone() is not None)
+check("undo keep-v2 -> marker cleared", con.execute(
+    "SELECT 1 FROM ape_keep_v2 WHERE track_id=? AND field='title'",
+    (tid6,)).fetchone() is None)
+
+# ---- 7d. delay-off: removal offered even with undecided differences --------
+nodelay = dict(settings)
+nodelay["apev2_delay_on_conflict"] = False
+rules.evaluate(con, nodelay, album_dirs=[adir])
+check("delay-off: removal offered despite undecided conflict", con.execute(
+    "SELECT 1 FROM proposals WHERE track_id=? AND field='_apev2'",
+    (tid6,)).fetchone() is not None)
+check("delay-off: no blocking conflict issue", con.execute(
+    "SELECT 1 FROM issues WHERE track_id=? AND rule='apev2_conflict'",
+    (tid6,)).fetchone() is None)
+rules.evaluate(con, settings, album_dirs=[adir])   # back to delayed default
 
 # ---- 8. history revert restores a removed APEv2 tag ------------------------
 # reuse tid2 (clean removal applied in step 5): revert the album to before it

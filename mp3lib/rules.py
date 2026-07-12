@@ -620,6 +620,99 @@ def evaluate(con, settings, artist_folders=None, album_dirs=None):
                                  note=note)
         touched_ids.add(rid)
 
+    def foreign_tag_block(t, tid, artist, adir, tags, *, has_key, data_key,
+                          keep_table, conflict_fn, conflict_rule, remove_rule,
+                          pseudo_field, fields, delay_setting, offers_key, label):
+        """Shared ID3v1/APEv2 flow. Verifies the foreign tag against ID3v2,
+        keeps reversible PER-FIELD 'keep ID3v2' decisions (keep_table), and only
+        offers to remove the tag once every DIFFERING field is decided — unless
+        the removal rule's 'delay on conflict' option is off. Disabling the
+        removal rule means 'keep the tag on the file': the tag is ignored."""
+        data = tags.get(data_key) or {}
+        if not tags.get(has_key):
+            con.execute("DELETE FROM %s WHERE track_id=?" % keep_table, (tid,))
+            return
+        if rule_mode(settings, remove_rule) == "disabled":
+            return                      # keep the tag on the file: ignore it
+        raw = (conflict_fn(data, tags)
+               if rule_mode(settings, conflict_rule) != "disabled" else [])
+        # normalise conflict entries to (field, [old values], v2 display)
+        conflicts = [(f, ov if isinstance(ov, list) else [ov], v2)
+                     for f, ov, v2 in raw]
+        conflict_fields = {f for f, _o, _v in conflicts}
+        kept = {r[0] for r in con.execute(
+            "SELECT field FROM %s WHERE track_id=?" % keep_table, (tid,))}
+        for f in kept - conflict_fields:        # decision no longer applies
+            con.execute("DELETE FROM %s WHERE track_id=? AND field=?"
+                        % keep_table, (tid, f))
+        kept &= conflict_fields
+        undecided = [(f, ov, v2) for f, ov, v2 in conflicts if f not in kept]
+        decided = [(f, ov, v2) for f, ov, v2 in conflicts if f in kept]
+        rescues = [f for f in fields if data.get(f) and not tags.get(f)]
+        delay = settings.get(delay_setting, True)
+        # per-field rows (offers + reversible 'keeping ID3v2') are emitted at the
+        # end of the track so they never displace a higher-priority fix
+        t[offers_key] = {"undecided": undecided, "decided": decided}
+        if undecided and delay:
+            issue(tid, artist, adir, conflict_rule, RED,
+                  "%s: %s disagrees with ID3v2 (the current tag) — decide each"
+                  " field (use its value or keep ID3v2) before the tag can be"
+                  " removed: %s" % (t["file"], label, "; ".join(
+                      "%s: %s='%s' vs current v2='%s'"
+                      % (f, label, " | ".join(ov), v2) for f, ov, v2 in undecided)))
+            return                      # removal blocked until decided
+        # removal available (no undecided differences, or delay is off). A
+        # rescue writes the value and strips the tag in the same write, so the
+        # explicit removal proposal is only added when there is nothing to rescue
+        # (otherwise removing alone could drop an un-rescued value).
+        detail = []
+        if decided:
+            detail.append("keeping ID3v2 for " + ", ".join(f for f, _o, _v in decided))
+        if undecided:                   # only reachable with delay off
+            detail.append("ID3v2 kept for undecided " + ", ".join(
+                f for f, _o, _v in undecided))
+        if rescues:
+            detail.append("rescuing into ID3v2 " + ", ".join(rescues))
+        msg = ("%s: %s — %s; the tag is then removed" % (t["file"], label,
+               "; ".join(detail))) if detail else \
+              ("%s: %s — checked, all its information is preserved in ID3v2"
+               % (t["file"], label))
+        issue(tid, artist, adir, remove_rule, YEL, msg)
+        if not rescues:
+            propose(tid, artist, adir, pseudo_field, ["present"], ["remove"],
+                    remove_rule)
+
+    def foreign_tag_offers(t, tid, artist, adir, tags, *, conflict_rule, label,
+                           offers_key):
+        """Emit the per-field rows for a foreign tag: an applicable 'use the old
+        value' offer for undecided fields, and a reversible 'keeping ID3v2' row
+        for decided fields. Only where no OTHER rule already owns the field."""
+        info = t.pop(offers_key, None)
+        if not info:
+            return
+        for f, ov, v2 in info["undecided"]:
+            row = con.execute(
+                "SELECT rule FROM proposals WHERE track_id=? AND field=?"
+                " AND status IN ('pending','edited','postponed','needs_input')"
+                " LIMIT 1", (tid, f)).fetchone()
+            if row is None or row[0] == conflict_rule:
+                propose(tid, artist, adir, f, tags.get(f, []), ov, conflict_rule,
+                        note="%s value '%s'; ID3v2 (the current tag) says '%s' —"
+                             " apply to use the %s value (the tag is removed in"
+                             " the same step), or right-click → keep ID3v2"
+                             % (label, " | ".join(ov), v2, label))
+        for f, ov, v2 in info["decided"]:
+            row = con.execute(
+                "SELECT rule FROM proposals WHERE track_id=? AND field=?"
+                " AND status IN ('pending','edited','postponed','needs_input')"
+                " LIMIT 1", (tid, f)).fetchone()
+            if row is None or row[0] == conflict_rule:
+                propose(tid, artist, adir, f, tags.get(f, []), ov, conflict_rule,
+                        status="postponed",
+                        note="Decided: keeping ID3v2 '%s' over %s '%s' —"
+                             " right-click → Use %s value to switch this field"
+                             % (v2, label, " | ".join(ov), label))
+
     required = settings.get("required_fields", [])
     mv_fields = settings.get("multi_value_fields", [])
     seps = split_separators(settings)
@@ -669,94 +762,26 @@ def evaluate(con, settings, artist_folders=None, album_dirs=None):
                     propose(tid, artist, adir, "albumartist", [],
                             tags["artist"], "artist_sync")
 
-            # -- old ID3v1 leftover: verified before removal is proposed
-            if not tags.get("_has_v1"):
-                # a resolved "keep v2" decision is consumed once the tag is gone
-                con.execute("DELETE FROM v1_keep_v2 WHERE track_id=?", (tid,))
-            if tags.get("_has_v1") and settings["strip_id3v1"]:
-                # a disabled 'id3v1_conflict' type means: ignore differences
-                conflicts = (v1_conflicts(v1, tags)
-                             if rule_mode(settings, "id3v1_conflict") != "disabled"
-                             else [])
-                # user chose "keep ID3v2" -> conflict is resolved by decision
-                chose_v2 = con.execute(
-                    "SELECT 1 FROM v1_keep_v2 WHERE track_id=?",
-                    (tid,)).fetchone() is not None
-                rescues = [f for f in ("title", "artist", "album", "track",
-                                       "year", "genre", "comment")
-                           if v1.get(f) and not tags.get(f)]
-                if conflicts and not chose_v2:
-                    issue(tid, artist, adir, "id3v1_conflict", RED,
-                          "%s: old ID3v1 tag disagrees with ID3v2 (the current"
-                          " tag) — resolve before removal: %s"
-                          % (t["file"], "; ".join(
-                              "%s: old v1='%s' vs current v2='%s'" % c
-                              for c in conflicts)))
-                    # per-field "use v1" offers are created at the end of the
-                    # track (after mojibake etc.), so they never displace a fix
-                    t["_v1_offers"] = conflicts
-                elif conflicts and chose_v2:
-                    issue(tid, artist, adir, "id3v1", YEL,
-                          "%s: old ID3v1 tag differs — decision made: ID3v2"
-                          " stays, the old tag will be removed" % t["file"])
-                    propose(tid, artist, adir, "_id3v1",
-                            ["differs — ID3v2 stays"], ["remove"], "id3v1")
-                elif rescues:
-                    issue(tid, artist, adir, "id3v1", YEL,
-                          "%s: old ID3v1 tag holds data missing in ID3v2 (%s) —"
-                          " it is removed together with writing the rescued data"
-                          % (t["file"], ", ".join(rescues)))
-                else:
-                    issue(tid, artist, adir, "id3v1", YEL,
-                          "%s: old ID3v1 tag — checked, all its information is"
-                          " preserved in ID3v2" % t["file"])
-                    propose(tid, artist, adir, "_id3v1",
-                            ["present — all info preserved in ID3v2"], ["remove"],
-                            "id3v1")
-
-            # -- foreign APEv2 tag: verified before removal is proposed
-            # (same flow as the ID3v1 leftover above)
+            # -- old ID3v1 leftover and foreign APEv2 tag: verified against
+            # ID3v2, with reversible per-field 'keep ID3v2' decisions, before
+            # the tag's removal is offered (see foreign_tag_block)
+            foreign_tag_block(
+                t, tid, artist, adir, tags, has_key="_has_v1", data_key="_v1",
+                keep_table="v1_keep_v2", conflict_fn=v1_conflicts,
+                conflict_rule="id3v1_conflict", remove_rule="id3v1",
+                pseudo_field="_id3v1",
+                fields=("title", "artist", "album", "track", "year", "genre",
+                        "comment"),
+                delay_setting="id3v1_delay_on_conflict", offers_key="_v1_offers",
+                label="old ID3v1")
+            foreign_tag_block(
+                t, tid, artist, adir, tags, has_key="_has_ape", data_key="_ape",
+                keep_table="ape_keep_v2", conflict_fn=ape_conflicts,
+                conflict_rule="apev2_conflict", remove_rule="apev2",
+                pseudo_field="_apev2", fields=APE_FIELDS,
+                delay_setting="apev2_delay_on_conflict", offers_key="_ape_offers",
+                label="APEv2")
             ape = tags.get("_ape") or {}
-            if not tags.get("_has_ape"):
-                con.execute("DELETE FROM ape_keep_v2 WHERE track_id=?", (tid,))
-            if tags.get("_has_ape") and settings.get("strip_apev2", True):
-                ape_conf = (ape_conflicts(ape, tags)
-                            if rule_mode(settings, "apev2_conflict") != "disabled"
-                            else [])
-                chose_v2_ape = con.execute(
-                    "SELECT 1 FROM ape_keep_v2 WHERE track_id=?",
-                    (tid,)).fetchone() is not None
-                ape_rescues = [f for f in APE_FIELDS
-                               if ape.get(f) and not tags.get(f)]
-                if ape_conf and not chose_v2_ape:
-                    issue(tid, artist, adir, "apev2_conflict", RED,
-                          "%s: APEv2 tag disagrees with ID3v2 (the current tag)"
-                          " — resolve before removal: %s"
-                          % (t["file"], "; ".join(
-                              "%s: APEv2='%s' vs current v2='%s'"
-                              % (f, " | ".join(av), v2v)
-                              for f, av, v2v in ape_conf)))
-                    # per-field "use APEv2" offers are created at the end of the
-                    # track (after mojibake etc.), so they never displace a fix
-                    t["_ape_offers"] = ape_conf
-                elif ape_conf and chose_v2_ape:
-                    issue(tid, artist, adir, "apev2", YEL,
-                          "%s: APEv2 tag differs — decision made: ID3v2 stays,"
-                          " the APEv2 tag will be removed" % t["file"])
-                    propose(tid, artist, adir, "_apev2",
-                            ["differs — ID3v2 stays"], ["remove"], "apev2")
-                elif ape_rescues:
-                    issue(tid, artist, adir, "apev2", YEL,
-                          "%s: APEv2 tag holds data missing in ID3v2 (%s) — it is"
-                          " removed together with writing the rescued data"
-                          % (t["file"], ", ".join(ape_rescues)))
-                else:
-                    issue(tid, artist, adir, "apev2", YEL,
-                          "%s: APEv2 tag — checked, all its information is"
-                          " preserved in ID3v2" % t["file"])
-                    propose(tid, artist, adir, "_apev2",
-                            ["present — all info preserved in ID3v2"], ["remove"],
-                            "apev2")
             if tags.get("_version") and tags["_version"] != "2.4":
                 issue(tid, artist, adir, "id3_version", YEL,
                       "%s: ID3v%s (will be upgraded to 2.4)" % (t["file"], tags["_version"]))
@@ -873,39 +898,15 @@ def evaluate(con, settings, artist_folders=None, album_dirs=None):
                     issue(tid, artist, adir, "cover_tiny", YEL,
                           "%s: embedded cover only %d px" % (t["file"], px))
 
-            # -- per-field "use the ID3v1 value" offers (only where no OTHER
-            # rule already proposed something for the field; an existing offer
-            # of this same rule is refreshed so it never goes stale)
-            for field, v1v, v2v in t.pop("_v1_offers", []):
-                row = con.execute(
-                    "SELECT rule FROM proposals WHERE track_id=? AND field=?"
-                    " AND status IN ('pending','edited','postponed','needs_input')"
-                    " LIMIT 1", (tid, field)).fetchone()
-                if row is None or row[0] == "id3v1_conflict":
-                    # default status comes from the rule's mode in Settings
-                    # (postponed unless the user enabled it)
-                    propose(tid, artist, adir, field,
-                            tags.get(field, []), [v1v], "id3v1_conflict",
-                            note="old ID3v1 tag says '%s'; ID3v2 (the current"
-                                 " tag) says '%s' — apply this proposal to use"
-                                 " the old v1 value (the old tag is removed in"
-                                 " the same step), or right-click → keep ID3v2"
-                                 % (v1v, v2v))
-
-            # -- per-field "use the APEv2 value" offers (same rules as v1)
-            for field, apv, v2v in t.pop("_ape_offers", []):
-                row = con.execute(
-                    "SELECT rule FROM proposals WHERE track_id=? AND field=?"
-                    " AND status IN ('pending','edited','postponed','needs_input')"
-                    " LIMIT 1", (tid, field)).fetchone()
-                if row is None or row[0] == "apev2_conflict":
-                    propose(tid, artist, adir, field,
-                            tags.get(field, []), apv, "apev2_conflict",
-                            note="APEv2 tag says '%s'; ID3v2 (the current tag)"
-                                 " says '%s' — apply this proposal to use the"
-                                 " APEv2 value (the tag is removed in the same"
-                                 " step), or right-click → keep ID3v2"
-                                 % (" | ".join(apv), v2v))
+            # -- per-field ID3v1 / APEv2 rows: an applicable "use the old value"
+            # offer for undecided fields and a reversible "keeping ID3v2" row for
+            # decided ones (emitted here so they never displace a higher fix)
+            foreign_tag_offers(t, tid, artist, adir, tags,
+                               conflict_rule="id3v1_conflict",
+                               label="old ID3v1", offers_key="_v1_offers")
+            foreign_tag_offers(t, tid, artist, adir, tags,
+                               conflict_rule="apev2_conflict",
+                               label="APEv2", offers_key="_ape_offers")
 
             # -- required fields still without any proposal -> ask for input
             for field in required:

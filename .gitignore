@@ -12,6 +12,9 @@ library*.db
 *.db-wal
 *.db-shm
 
+# Local test music / scratch library folders (never publish - may be copyrighted)
+temp/
+
 dev/config.backup.json
 
 # Runtime output

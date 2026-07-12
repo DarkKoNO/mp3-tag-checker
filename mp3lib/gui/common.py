@@ -7,8 +7,12 @@ from .. import db
 
 # Severity / status colors. These dicts are MUTATED IN PLACE by apply_theme,
 # so every module that imported them sees the active theme's colors.
-SEV_COLORS = {"red": "#d9534f", "yellow": "#e0a800", "green": "#4a9e4a", None: "#4a9e4a"}
-SEV_RANK = {"red": 2, "yellow": 1, None: 0, "green": 0}
+# 'gray' = the file is missing on disk (a leftover library entry). It ranks
+# below yellow so a real red/yellow problem still shows at a parent node, but
+# above green so an otherwise-clean album with a missing track no longer looks OK.
+SEV_COLORS = {"red": "#d9534f", "yellow": "#e0a800", "gray": "#8f8f8f",
+              "green": "#4a9e4a", None: "#4a9e4a"}
+SEV_RANK = {"red": 3, "yellow": 2, "gray": 1, None: 0, "green": 0}
 STATUS_COLORS = {
     "postponed": "#8f8f8f",     # gray   = postponed (visible, not applied)
     "exception": "#9575cd",     # purple = exception (permanently ignored)
@@ -148,6 +152,95 @@ def enable_copy(view):
     sc.activated.connect(do_copy)
 
 
+def add_hover_copy(table, value_col):
+    """Make the values in `value_col` text-selectable (select part of a value
+    with the mouse and press Ctrl+C) and show a one-click copy icon at the end
+    of the row under the pointer. The value cells become read-only selectable
+    labels, so whole-cell selection is not needed."""
+    from PySide6.QtCore import QEvent, QObject, Qt, QTimer
+    from PySide6.QtWidgets import QApplication, QLabel, QToolButton
+
+    btn = QToolButton(table.viewport())
+    btn.setText("⧉")
+    btn.setToolTip("Copy this value to the clipboard")
+    btn.setCursor(Qt.PointingHandCursor)
+    btn.setAutoRaise(True)
+    btn.hide()
+    btn._row = None
+
+    hide_timer = QTimer(table)
+    hide_timer.setSingleShot(True)
+    hide_timer.setInterval(140)
+
+    def _hide():
+        btn.hide()
+        btn._row = None
+    hide_timer.timeout.connect(_hide)
+
+    def do_copy():
+        if btn._row is None:
+            return
+        it = table.item(btn._row, value_col)
+        if it is not None:
+            QApplication.clipboard().setText(it.text())
+    btn.clicked.connect(do_copy)
+
+    def show_for(row):
+        hide_timer.stop()
+        it = table.item(row, value_col)
+        if it is None or not it.text().strip() or it.text() == "—":
+            _hide()
+            return
+        rect = table.visualRect(table.model().index(row, value_col))
+        size = max(14, min(rect.height() - 2, 20))
+        btn.resize(size, size)
+        btn.move(rect.right() - size - 2, rect.top() + (rect.height() - size) // 2)
+        btn._row = row
+        btn.raise_()
+        btn.show()
+
+    class _RowHover(QObject):
+        def __init__(self, row):
+            super().__init__(table)
+            self.row = row
+
+        def eventFilter(self, _obj, ev):
+            if ev.type() == QEvent.Enter:
+                show_for(self.row)
+            elif ev.type() == QEvent.Leave:
+                hide_timer.start()      # brief grace so moving onto the icon works
+            return False
+
+    class _BtnHover(QObject):
+        def eventFilter(self, _obj, ev):
+            if ev.type() == QEvent.Enter:
+                hide_timer.stop()
+            elif ev.type() == QEvent.Leave:
+                hide_timer.start()
+            return False
+
+    filters = []
+    for r in range(table.rowCount()):
+        it = table.item(r, value_col)
+        text = it.text() if it is not None else ""
+        if not text.strip() or text == "—":
+            continue
+        lbl = QLabel(text)
+        lbl.setTextInteractionFlags(Qt.TextSelectableByMouse
+                                    | Qt.TextSelectableByKeyboard)
+        lbl.setCursor(Qt.IBeamCursor)
+        lbl.setContentsMargins(4, 0, 22, 0)     # leave room for the copy icon
+        lbl.setToolTip("Select text and press Ctrl+C, or click the copy icon")
+        table.setCellWidget(r, value_col, lbl)  # item stays underneath for copy
+        f = _RowHover(r)
+        lbl.installEventFilter(f)
+        filters.append(f)
+
+    bf = _BtnHover()
+    btn.installEventFilter(bf)
+    table._hover_copy = (btn, hide_timer, filters, bf)   # keep refs alive
+
+
 def sel_label(text, rich=False):
     """A QLabel whose text can be selected with the mouse and copied."""
     from PySide6.QtWidgets import QLabel
@@ -222,6 +315,7 @@ def apply_theme(theme_name):
 
     # severity / status colors: mutate the shared dicts + drop cached icons
     SEV_COLORS.update({"red": c["severity_red"], "yellow": c["severity_yellow"],
+                       "gray": c.get("postponed", "#8f8f8f"),
                        "green": c["severity_green"], None: c["severity_green"]})
     STATUS_COLORS.update({"postponed": c["postponed"],
                           "exception": c["exception"],

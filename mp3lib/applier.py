@@ -18,21 +18,27 @@ def _write_track(con, settings, batch_id, track_id, path, changes, origin_by_fie
     bytes = write exactly this ID3v1 block (history revert); None = normal.
     keep_ape: {field: [values]} = restore this APEv2 tag (history revert);
     None = strip per settings, but never while a v2 conflict is open."""
+    # a disabled removal rule means "keep the tag on the file": never strip it
+    v1_enabled = rules.rule_mode(settings, "id3v1") != "disabled"
+    ape_enabled = rules.rule_mode(settings, "apev2") != "disabled"
     if keep_v1 == "auto":
         keep = None
         # unresolved ID3v1/v2 conflict: never let a write destroy the old tag
-        if con.execute("SELECT 1 FROM issues WHERE track_id=?"
-                       " AND rule='id3v1_conflict' LIMIT 1",
-                       (track_id,)).fetchone():
+        if v1_enabled and con.execute(
+                "SELECT 1 FROM issues WHERE track_id=?"
+                " AND rule='id3v1_conflict' LIMIT 1", (track_id,)).fetchone():
             keep = tagio.get_v1_bytes(path)
     else:
         keep = keep_v1
-    # APEv2: same "never destroy an unresolved conflict" guard (unless a revert
-    # is explicitly restoring the tag via keep_ape)
+    strip_v1 = None
+    if not v1_enabled and keep_v1 == "auto":
+        strip_v1 = False            # rule off: keep the ID3v1 tag as-is
+    # APEv2: same guards — rule off keeps the tag; an unresolved conflict (an
+    # apev2_conflict issue only exists while a difference is undecided) keeps it
     strip_ape = None
-    if keep_ape is None and con.execute(
+    if keep_ape is None and (not ape_enabled or con.execute(
             "SELECT 1 FROM issues WHERE track_id=? AND rule='apev2_conflict'"
-            " LIMIT 1", (track_id,)).fetchone():
+            " LIMIT 1", (track_id,)).fetchone()):
         strip_ape = False
     # a cover replacement: remember the old picture so revert can restore it
     if "cover" in changes:
@@ -41,7 +47,8 @@ def _write_track(con, settings, batch_id, track_id, path, changes, origin_by_fie
         if snap and old_cov:
             db.save_cover_blob(con, snap["id"], old_cov[0], old_cov[1])
     applied = tagio.write_changes(path, changes, settings, keep_v1_bytes=keep,
-                                  strip_ape=strip_ape, keep_ape_data=keep_ape)
+                                  strip_ape=strip_ape, keep_ape_data=keep_ape,
+                                  strip_v1=strip_v1)
     tags = tagio.read_tags(path)
     db.add_snapshot(con, track_id, batch_id, reason, tags,
                     keep=settings["history_keep"])
@@ -61,6 +68,40 @@ def _write_track(con, settings, batch_id, track_id, path, changes, origin_by_fie
         db.log_change(con, track_id, path, f, old_v, new_v,
                       origin_by_field.get(f, "rule"))
     return len(applied) + len(pseudo)
+
+
+def _resolve_foreign_removal(con, settings, tid, plist, changes, origin):
+    """When a track's ID3v1/APEv2 'use old value' proposals are being applied,
+    add the tag-removal pseudo change if applying them leaves no UNDECIDED
+    conflict. A field the user marked 'keep ID3v2' (a row in *_keep_v2) counts
+    as decided, so it never blocks removal."""
+    for rule_conf, remove_rule, has_key, data_key, keep_table, conflict_fn, \
+            pseudo in (
+            ("id3v1_conflict", "id3v1", "_has_v1", "_v1", "v1_keep_v2",
+             rules.v1_conflicts, "_id3v1"),
+            ("apev2_conflict", "apev2", "_has_ape", "_ape", "ape_keep_v2",
+             rules.ape_conflicts, "_apev2")):
+        if not any(p["rule"] == rule_conf for p in plist):
+            continue
+        if rules.rule_mode(settings, remove_rule) == "disabled":
+            continue                    # keep the tag on the file
+        snap = db.latest_snapshot(con, tid)
+        tags = snap["tags"] if snap else {}
+        if not tags.get(has_key):
+            continue
+        updated = dict(tags)
+        for f, v in changes.items():
+            if f != "cover" and f not in tagio.PSEUDO_FIELDS:
+                updated[f] = v
+        kept = {r[0] for r in con.execute(
+            "SELECT field FROM %s WHERE track_id=?" % keep_table, (tid,))}
+        undecided = [c for c in conflict_fn(tags.get(data_key) or {}, updated)
+                     if c[0] not in kept]
+        if not undecided:
+            con.execute("DELETE FROM issues WHERE track_id=? AND rule=?",
+                        (tid, rule_conf))
+            changes.setdefault(pseudo, ["remove"])
+            origin.setdefault(pseudo, "rule")
 
 
 def apply_proposals(con, settings, artist_folders=None, album_dirs=None,
@@ -122,38 +163,10 @@ def apply_proposals(con, settings, artist_folders=None, album_dirs=None,
             mime, data, _cp = cover_for_album[adir]
             changes["cover"] = (mime, bytes(data))
             origin["cover"] = "online"
-        # applying a 'use the old ID3v1 value' proposal: when the values being
-        # written leave no remaining v1/v2 difference, the old tag is removed
-        # in the same write (value first, removal second - one apply does both)
-        if (any(p["rule"] == "id3v1_conflict" for p in plist)
-                and settings.get("strip_id3v1", True)):
-            snap = db.latest_snapshot(con, tid)
-            tags = snap["tags"] if snap else {}
-            updated = dict(tags)
-            for f, v in changes.items():
-                if f != "cover" and f not in tagio.PSEUDO_FIELDS:
-                    updated[f] = v
-            if tags.get("_has_v1") and not rules.v1_conflicts(
-                    tags.get("_v1") or {}, updated):
-                con.execute("DELETE FROM issues WHERE track_id=?"
-                            " AND rule='id3v1_conflict'", (tid,))
-                changes.setdefault("_id3v1", ["remove"])
-                origin.setdefault("_id3v1", "rule")
-        # same for an applied 'use the APEv2 value' proposal
-        if (any(p["rule"] == "apev2_conflict" for p in plist)
-                and settings.get("strip_apev2", True)):
-            snap = db.latest_snapshot(con, tid)
-            tags = snap["tags"] if snap else {}
-            updated = dict(tags)
-            for f, v in changes.items():
-                if f != "cover" and f not in tagio.PSEUDO_FIELDS:
-                    updated[f] = v
-            if tags.get("_has_ape") and not rules.ape_conflicts(
-                    tags.get("_ape") or {}, updated):
-                con.execute("DELETE FROM issues WHERE track_id=?"
-                            " AND rule='apev2_conflict'", (tid,))
-                changes.setdefault("_apev2", ["remove"])
-                origin.setdefault("_apev2", "rule")
+        # Applying a 'use the old value' proposal: once the values being written
+        # leave no UNDECIDED difference (a field the user chose to keep at ID3v2
+        # counts as decided), the foreign tag is removed in the same write.
+        _resolve_foreign_removal(con, settings, tid, plist, changes, origin)
         try:
             n_changes += _write_track(con, settings, batch_id, tid, path,
                                       changes, origin)
@@ -307,21 +320,27 @@ def revert_album(con, settings, album_dir, batch_id, progress=None):
     return {"files": n_files, "changes": n_changes, "errors": errors}
 
 
-def resolve_v1_keep_v2(con, settings, entries):
-    """User chose 'keep ID3v2' for v1/v2 conflicts. Recorded as a lightweight
-    decision (NOT an exception): the row stays visible as "ID3v2 stays", the
-    removal becomes applicable, and the marker clears itself once the old tag
-    is really gone."""
+_KEEP_TABLE = {"id3v1_conflict": "v1_keep_v2", "apev2_conflict": "ape_keep_v2"}
+
+
+def set_keep_v2(con, settings, entries, keep):
+    """Record (keep=True) or undo (keep=False) a PER-FIELD 'keep ID3v2' decision
+    for the SELECTED ID3v1/APEv2 conflict rows only. Reversible: the decision is
+    a marker in v1_keep_v2 / ape_keep_v2, never an exception and never a delete
+    of other fields — so nothing the user did not select is touched, and they
+    can switch any field back at any time. Re-evaluates the affected albums."""
     albums = set()
     for e in entries:
-        if e.get("rule") != "id3v1_conflict" or not e.get("track_id"):
+        table = _KEEP_TABLE.get(e.get("rule"))
+        tid, field = e.get("track_id"), e.get("field")
+        if not table or not tid or not field:
             continue
-        con.execute("INSERT OR IGNORE INTO v1_keep_v2(track_id, created_at)"
-                    " VALUES (?,?)", (e["track_id"], db.now()))
-        con.execute("DELETE FROM proposals WHERE track_id=? AND"
-                    " rule='id3v1_conflict' AND status IN"
-                    " ('pending','edited','postponed','needs_input')",
-                    (e["track_id"],))
+        if keep:
+            con.execute("INSERT OR IGNORE INTO %s(track_id, field, created_at)"
+                        " VALUES (?,?,?)" % table, (tid, field, db.now()))
+        else:
+            con.execute("DELETE FROM %s WHERE track_id=? AND field=?" % table,
+                        (tid, field))
         if e.get("album_dir"):
             albums.add(e["album_dir"])
     con.commit()
@@ -329,25 +348,31 @@ def resolve_v1_keep_v2(con, settings, entries):
         rules.evaluate(con, settings, album_dirs=list(albums))
 
 
-def resolve_ape_keep_v2(con, settings, entries):
-    """User chose 'keep ID3v2' for APEv2/v2 conflicts. Same lightweight marker
-    as resolve_v1_keep_v2 - the APEv2 tag becomes removable and the marker
-    clears itself once the tag is really gone."""
-    albums = set()
+def use_old_value(con, settings, entries):
+    """Switch the SELECTED ID3v1/APEv2 conflict fields to 'use the old value':
+    clear any keep-ID3v2 decision and make the offer applicable (pending) so a
+    following Apply writes the old value (and removes the tag once every field
+    is decided). Reversible and per-field — only the selected rows change."""
+    albums, keys = set(), []
     for e in entries:
-        if e.get("rule") != "apev2_conflict" or not e.get("track_id"):
+        table = _KEEP_TABLE.get(e.get("rule"))
+        tid, field = e.get("track_id"), e.get("field")
+        if not table or not tid or not field:
             continue
-        con.execute("INSERT OR IGNORE INTO ape_keep_v2(track_id, created_at)"
-                    " VALUES (?,?)", (e["track_id"], db.now()))
-        con.execute("DELETE FROM proposals WHERE track_id=? AND"
-                    " rule='apev2_conflict' AND status IN"
-                    " ('pending','edited','postponed','needs_input')",
-                    (e["track_id"],))
+        con.execute("DELETE FROM %s WHERE track_id=? AND field=?" % table,
+                    (tid, field))
+        keys.append((tid, field, e["rule"]))
         if e.get("album_dir"):
             albums.add(e["album_dir"])
     con.commit()
     if albums:
         rules.evaluate(con, settings, album_dirs=list(albums))
+    # the regenerated offer is postponed by default; un-postpone the chosen ones
+    for tid, field, rule in keys:
+        con.execute("UPDATE proposals SET status='pending' WHERE track_id=?"
+                    " AND field=? AND rule=? AND status IN ('postponed',"
+                    " 'needs_input')", (tid, field, rule))
+    con.commit()
 
 
 def set_manual_proposal(con, track_id, field, new_values):

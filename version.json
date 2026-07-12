@@ -1,6 +1,17 @@
 {
-  "version": "1.4.0",
+  "version": "1.5.0",
   "changelog": [
+    {
+      "version": "1.5.0",
+      "date": "2026-07-12",
+      "changes": [
+        "Missing files: MP3s that were deleted or moved on disk no longer vanish silently. They now show a gray marker that propagates up to the album and artist, a new 'Missing files (gray)' filter narrows to them, and clicking one offers to remove just that leftover entry. A scan option can automatically remove whole gone albums (whole folder missing), while albums that lost only some tracks are kept and marked gray.",
+        "ID3v1 / APEv2 conflicts are now decided per field and are fully reversible: 'Use the old tag's value' and 'Keep ID3v2' act only on the rows you selected, you can choose differently for each field, and you can switch any field back at any time. The foreign tag is only removed once every differing field is decided (a per-rule option can allow removing it anyway). Fixes a bug where 'Keep ID3v2' discarded conflict options you had not selected.",
+        "Copy from the metadata tables: the value in the Current column is now selectable text — select part of a value and press Ctrl+C — with a one-click copy icon revealed on hover. Clicking a value no longer highlights the whole cell.",
+        "Album cover viewer: click the album cover to open it at full resolution in a floating window with mouse-wheel and +/- zoom, fit-to-window (never overflowing the screen), the pixel resolution and zoom shown at the bottom, and a Close button.",
+        "User data (config.json, themes.json, library databases) can be redirected with the MP3TAGGER_DATA_DIR environment variable, keeping automated tests fully separated from real settings."
+      ]
+    },
     {
       "version": "1.4.0",
       "date": "2026-07-11",

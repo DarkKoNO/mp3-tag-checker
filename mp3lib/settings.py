@@ -10,10 +10,19 @@ import re
 import sys
 from pathlib import Path
 
-BASE_DIR = Path(__file__).resolve().parent.parent
-CONFIG_PATH = BASE_DIR / "config.json"
-DB_PATH = BASE_DIR / "library.db"   # default/fallback (legacy + tests)
-THEMES_PATH = BASE_DIR / "themes.json"   # user-defined themes
+BASE_DIR = Path(__file__).resolve().parent.parent   # code + shipped resources
+# All USER DATA (config, themes, library databases) lives in DATA_DIR. It is
+# BASE_DIR by default, but can be redirected with the MP3TAGGER_DATA_DIR
+# environment variable so tests (and portable installs) never read or write the
+# real files. Only user data moves — version.json and other shipped resources
+# stay under BASE_DIR.
+import os as _os
+DATA_DIR = Path(_os.environ["MP3TAGGER_DATA_DIR"]).expanduser() \
+    if _os.environ.get("MP3TAGGER_DATA_DIR") else BASE_DIR
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+CONFIG_PATH = DATA_DIR / "config.json"
+DB_PATH = DATA_DIR / "library.db"   # default/fallback (legacy + tests)
+THEMES_PATH = DATA_DIR / "themes.json"   # user-defined themes
 
 # ---------------------------------------------------------------- themes ----
 # A theme = every color and font the app uses. 'Light' and 'Dark' are built
@@ -227,9 +236,16 @@ def resolve_theme(name):
 DEFAULT_SETTINGS = {
     # appearance
     "theme": "auto",              # 'auto' = follow Windows, 'dark', 'light'
-    # writing standard
-    "strip_id3v1": True,          # remove old ID3v1 tag on every write
-    "strip_apev2": True,          # remove foreign APEv2 tag on every write
+    # writing standard. strip_* = the app manages/removes these foreign tags;
+    # "keep the tag on the file" is expressed by DISABLING the id3v1 / apev2
+    # problem type (Settings - Problem types), not by a separate toggle.
+    "strip_id3v1": True,          # remove old ID3v1 tag when the rule is enabled
+    "strip_apev2": True,          # remove foreign APEv2 tag when the rule is enabled
+    # delay removing a foreign tag until every field where it DISAGREES with
+    # ID3v2 has been decided (use the old value, or keep ID3v2). Off = remove
+    # even while differences are undecided (ID3v2 wins for anything not chosen).
+    "id3v1_delay_on_conflict": True,
+    "apev2_delay_on_conflict": True,
     "utf8_all_frames": True,      # re-encode all text frames as UTF-8 on write
     "preserve_file_times": True,  # keep 'date modified' when only tags change
     # track numbers
@@ -314,7 +330,7 @@ def make_db_filename(name, libraries):
     taken = {lib.get("db") for lib in libraries}
     db = "library_%s.db" % base
     i = 2
-    while db in taken or (BASE_DIR / db).exists():
+    while db in taken or (DATA_DIR / db).exists():
         db = "library_%s_%d.db" % (base, i)
         i += 1
     return db
@@ -400,7 +416,7 @@ def active_library(cfg):
 
 def lib_db_path(lib):
     p = Path(lib.get("db", "library.db"))
-    return p if p.is_absolute() else BASE_DIR / p
+    return p if p.is_absolute() else DATA_DIR / p
 
 
 def read_folders_txt(path: Path):

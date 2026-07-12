@@ -121,19 +121,20 @@ def _migrate(con):
         con.execute("ALTER TABLE proposals ADD COLUMN rule TEXT")
     if "note" not in cols:
         con.execute("ALTER TABLE proposals ADD COLUMN note TEXT")
-    # "keep ID3v2" decisions for v1/v2 conflicts: a lightweight marker, NOT an
-    # exception - it clears itself once the old tag is really gone
-    con.execute("CREATE TABLE IF NOT EXISTS v1_keep_v2("
-                "track_id INTEGER PRIMARY KEY, created_at TEXT)")
-    for (tid,) in con.execute("SELECT track_id FROM exceptions WHERE"
-                              " rule='id3v1_conflict' AND track_id IS NOT NULL"
-                              ).fetchall():
-        con.execute("INSERT OR IGNORE INTO v1_keep_v2(track_id, created_at)"
-                    " VALUES (?,?)", (tid, now()))
     con.execute("DELETE FROM exceptions WHERE rule='id3v1_conflict'")
-    # same lightweight "keep ID3v2" marker for the APEv2/v2 conflict flow
-    con.execute("CREATE TABLE IF NOT EXISTS ape_keep_v2("
-                "track_id INTEGER PRIMARY KEY, created_at TEXT)")
+    # Per-field "keep ID3v2" decisions for the v1/v2 and APEv2/v2 conflict flows:
+    # a lightweight, reversible marker (NOT an exception) recording that the user
+    # decided to keep the current ID3v2 value of THIS field over the old/foreign
+    # tag's value. One row per (track, field) so decisions are independent and
+    # can be switched back. Older track-level tables (no 'field' column) are
+    # replaced - the coarse markers are dropped and the user re-decides.
+    for tbl in ("v1_keep_v2", "ape_keep_v2"):
+        cols = [r[1] for r in con.execute("PRAGMA table_info(%s)" % tbl)]
+        if cols and "field" not in cols:
+            con.execute("DROP TABLE %s" % tbl)
+        con.execute("CREATE TABLE IF NOT EXISTS %s("
+                    "track_id INTEGER, field TEXT, created_at TEXT,"
+                    " PRIMARY KEY(track_id, field))" % tbl)
     con.commit()
 
 

@@ -190,10 +190,11 @@ class MainWindow(QMainWindow):
 
         self.sev_combo = QComboBox()
         self.sev_combo.addItems(["All", "Red + yellow", "Red only",
-                                 "With exceptions"])
+                                 "Missing files (gray)", "With exceptions"])
         self.sev_combo.setToolTip(
             "Show only entries of the chosen severity (red = real problem,"
-            " yellow = should be improved), or only entries with exceptions")
+            " yellow = should be improved, gray = file missing on disk), or"
+            " only entries with exceptions")
         self.sev_combo.currentIndexChanged.connect(self.refresh_tree)
         self._lib_widgets.append(self.sev_combo)
         self.images_cb = QCheckBox("Show image problems")
@@ -312,6 +313,9 @@ class MainWindow(QMainWindow):
         self.detail.refresh()
 
     def _exceptions_only(self):
+        return self.sev_combo.currentIndex() == 4
+
+    def _missing_only(self):
         return self.sev_combo.currentIndex() == 3
 
     # ------------------------------------------------------------- helpers ---
@@ -467,7 +471,8 @@ class MainWindow(QMainWindow):
             return Path(adir).name
 
     def _min_rank(self):
-        return {0: 0, 1: 1, 2: 2, 3: 0}[self.sev_combo.currentIndex()]
+        # All=0, Red+yellow=yellow(2), Red only=red(3), Missing/Exceptions=0
+        return {0: 0, 1: 2, 2: 3, 3: 0, 4: 0}[self.sev_combo.currentIndex()]
 
     def _exception_scopes(self):
         """(artists_with_any_exception, albums_with_exceptions,
@@ -563,6 +568,12 @@ class MainWindow(QMainWindow):
             if adir is not None:
                 alb_sev[adir] = worse(alb_sev.get(adir), sev)
             art_sev[artist] = worse(art_sev.get(artist), sev)
+        # files missing on disk -> gray, propagated up to album and artist
+        for tid, artist, adir in self.con.execute(
+                "SELECT id, artist_folder, album_dir FROM tracks WHERE missing=1"):
+            trk_sev[tid] = worse(trk_sev.get(tid), "gray")
+            alb_sev[adir] = worse(alb_sev.get(adir), "gray")
+            art_sev[artist] = worse(art_sev.get(artist), "gray")
         return alb_sev, art_sev, trk_sev
 
     def _open_counts(self):
@@ -589,12 +600,23 @@ class MainWindow(QMainWindow):
         exc_only = self._exceptions_only()
         exc_arts, exc_albs, exc_art_level = (
             self._exception_scopes() if exc_only else (set(), set(), set()))
+        # missing (gray) entries are shown too, so a deleted file no longer just
+        # vanishes; the "Missing files" filter narrows to exactly those
+        missing_only = self._missing_only()
+        miss_tids = {r[0] for r in self.con.execute(
+            "SELECT id FROM tracks WHERE missing=1")}
+        miss_albums = {r[0] for r in self.con.execute(
+            "SELECT DISTINCT album_dir FROM tracks WHERE missing=1")}
+        miss_artists = {r[0] for r in self.con.execute(
+            "SELECT DISTINCT artist_folder FROM tracks WHERE missing=1")}
         root_item = self.model.invisibleRootItem()
         artists = [r[0] for r in self.con.execute(
-            "SELECT DISTINCT artist_folder FROM tracks WHERE missing=0"
+            "SELECT DISTINCT artist_folder FROM tracks"
             " ORDER BY artist_folder COLLATE NOCASE")]
         for artist in artists:
             if exc_only and artist not in exc_arts:
+                continue
+            if missing_only and artist not in miss_artists:
                 continue
             if SEV_RANK.get(art_sev.get(artist), 0) < min_rank:
                 continue
@@ -602,21 +624,26 @@ class MainWindow(QMainWindow):
             a_n = self._item(str(art_open.get(artist, "") or ""))
             for (adir,) in self.con.execute(
                     "SELECT DISTINCT album_dir FROM tracks WHERE artist_folder=?"
-                    " AND missing=0 ORDER BY album_dir", (artist,)):
+                    " ORDER BY album_dir", (artist,)):
                 if (exc_only and adir not in exc_albs
                         and artist not in exc_art_level):
+                    continue
+                if missing_only and adir not in miss_albums:
                     continue
                 if SEV_RANK.get(alb_sev.get(adir), 0) < min_rank:
                     continue
                 b_item = self._item(self.album_display(adir), "album", adir,
                                     alb_sev.get(adir))
                 b_n = self._item(str(alb_open.get(adir, "") or ""))
-                for tid, fname in self.con.execute(
-                        "SELECT id, filename FROM tracks WHERE album_dir=?"
-                        " AND missing=0 ORDER BY filename", (adir,)):
+                for tid, fname, miss in self.con.execute(
+                        "SELECT id, filename, missing FROM tracks WHERE album_dir=?"
+                        " ORDER BY filename", (adir,)):
+                    if missing_only and tid not in miss_tids:
+                        continue
                     if min_rank and SEV_RANK.get(trk_sev.get(tid), 0) < min_rank:
                         continue
-                    b_item.appendRow([self._item(fname, "track", tid,
+                    label = (fname + "  — missing on disk") if miss else fname
+                    b_item.appendRow([self._item(label, "track", tid,
                                                  trk_sev.get(tid)),
                                       self._item("")])
                 a_item.appendRow([b_item, b_n])
@@ -854,9 +881,11 @@ class MainWindow(QMainWindow):
 
         settings = self.cfg["settings"]
         full = dlg.full_cb.isChecked()
+        auto_remove = dlg.autoremove_cb.isChecked()
         self._run_worker(
             lambda con, prog: scanner.scan(con, settings, root, entries,
-                                           progress=prog, full=full),
+                                           progress=prog, full=full,
+                                           auto_remove_gone=auto_remove),
             "Scanning…", self._scan_done)
 
     def remove_selected(self):

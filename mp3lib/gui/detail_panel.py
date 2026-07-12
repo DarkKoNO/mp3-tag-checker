@@ -20,11 +20,11 @@ import os
 from .. import applier, db, tagio
 from ..rules import (IMAGE_RULES, RULE_SEVERITY, missing_field_of,
                      rule_description, rule_label)
-from .common import (SEV_COLORS, SEV_RANK, STATUS_COLORS,
+from .common import (SEV_COLORS, SEV_RANK, STATUS_COLORS, add_hover_copy,
                      copy_button, enable_copy, field_label, join_vals,
                      persist_header, persist_splitter, sel_label, split_vals)
 from .dialogs import (ArtistImageDialog, CoverSearchDialog, ExceptionsDialog,
-                      HistoryDialog)
+                      HistoryDialog, ImageViewerDialog)
 
 ALBUM_PRIMARY = ["album", "albumartist", "year", "genre"]
 # fields that only make sense per track, never edited album-wide
@@ -708,6 +708,46 @@ class DetailPanel(QWidget):
         self.lay.addLayout(btns)
         self.lay.addStretch(1)
 
+    def _show_gone_track(self, track_id, fname, path, adir):
+        """A single track whose file is missing on disk (gray). Explain and offer
+        to drop just this leftover entry; the album keeps its remaining tracks."""
+        title_row = QHBoxLayout()
+        title_row.addWidget(sel_label(
+            "<h3><span style='color:gray;'>Missing file:</span> %s</h3>"
+            % html.escape(fname)))
+        title_row.addStretch(1)
+        self.lay.addLayout(title_row)
+        note = sel_label(
+            "<i>This file no longer exists on disk — it was renamed, moved or"
+            " deleted since the last scan.</i><br>"
+            "<i>Only a leftover database entry remains; its tags and history are"
+            " still stored. If the file really is gone you can remove the"
+            " entry, or leave it (it stays marked gray).</i><br><br>"
+            "<span style='color:gray;'>Recorded path: %s</span>"
+            % html.escape(path))
+        note.setWordWrap(True)
+        self.lay.addWidget(note)
+        btns = QHBoxLayout()
+        rm = QPushButton("Remove this track entry from the library")
+        rm.setToolTip("Deletes only the database entry (tags, proposals,"
+                      " history) for this missing file. No files on disk are"
+                      " touched; a rescan re-adds it if it reappears.")
+
+        def _remove():
+            db.remove_scope(self.con, track_ids=[track_id])
+            self.show_nothing()
+            self.owner.refresh_tree()
+
+        rm.clicked.connect(_remove)
+        btns.addWidget(rm)
+        artist = self.con.execute(
+            "SELECT artist_folder FROM tracks WHERE id=?", (track_id,)).fetchone()
+        if artist and artist[0]:
+            btns.addWidget(self._refresh_btn(artists=[artist[0]]))
+        btns.addStretch(1)
+        self.lay.addLayout(btns)
+        self.lay.addStretch(1)
+
     def show_album(self, adir):
         _clear(self.lay)
         self.current = ("album", adir)
@@ -784,6 +824,9 @@ class DetailPanel(QWidget):
         table.setHorizontalHeaderLabels(["Field", "Current", "Proposed", "", ""])
         table.verticalHeader().setVisible(False)
         table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        # no cell/row selection here — the values are selectable as text instead
+        # (clicking a value must not highlight the whole cell)
+        table.setSelectionMode(QAbstractItemView.NoSelection)
         self._album_field_rows = album_fields
         self._album_edits = {}
         for r, field in enumerate(album_fields):
@@ -862,6 +905,7 @@ class DetailPanel(QWidget):
         table.setColumnWidth(3, 60)
         table.setColumnWidth(4, 64)
         enable_copy(table)
+        add_hover_copy(table, 1)        # copy icon on hover in the Current column
         persist_header(self.cfg, "album_fields", table.horizontalHeader())
         self.album_table = table
         left_head.addWidget(table, 1)
@@ -880,11 +924,19 @@ class DetailPanel(QWidget):
         try:
             got = tagio.get_cover_data(tracks[0][2]) if tracks else None
             if got:
-                pm = QPixmap()
-                pm.loadFromData(got[1])
-                cover_lbl.setPixmap(pm.scaled(158, 158, Qt.KeepAspectRatio,
-                                              Qt.SmoothTransformation))
-                cover_lbl.setToolTip("Embedded cover of the first track")
+                full = QPixmap()
+                full.loadFromData(got[1])
+                cover_lbl.setPixmap(full.scaled(158, 158, Qt.KeepAspectRatio,
+                                                Qt.SmoothTransformation))
+                cover_lbl.setCursor(Qt.PointingHandCursor)
+                cover_lbl.setToolTip("Embedded cover of the first track —"
+                                     " click to view at full resolution")
+                aname = self.owner.album_display(adir)
+
+                def _open_cover(_ev, p=full, name=aname):
+                    if not p.isNull():
+                        ImageViewerDialog(p, "Cover — %s" % name, self).exec()
+                cover_lbl.mousePressEvent = _open_cover
             else:
                 cover_lbl.setText("no cover")
         except Exception:
@@ -1252,20 +1304,15 @@ class DetailPanel(QWidget):
                        self._except_selected)
         if any(e["kind"] == "prop" and e["source"] == "manual" for e in entries):
             menu.addAction("Delete manual change(s)", self._delete_selected)
-        if any(e.get("rule") == "id3v1_conflict" for e in entries):
+        if any(e.get("rule") in ("id3v1_conflict", "apev2_conflict")
+               for e in entries):
+            # per-field, selection-only, fully reversible: acts on exactly the
+            # rows selected and never touches any other field
             menu.addSeparator()
-            if postponed:
-                menu.addAction("Use old ID3v1 value (removes its postpone)",
-                               self._restore_selected)
-            menu.addAction("Keep ID3v2 value && allow removing the old tag",
-                           self._keep_v2_selected)
-        if any(e.get("rule") == "apev2_conflict" for e in entries):
-            menu.addSeparator()
-            if postponed:
-                menu.addAction("Use APEv2 value (removes its postpone)",
-                               self._restore_selected)
-            menu.addAction("Keep ID3v2 value && allow removing the APEv2 tag",
-                           self._keep_v2_ape_selected)
+            menu.addAction("Use the old tag's value for the selected field(s)",
+                           self._use_old_conflict)
+            menu.addAction("Keep ID3v2 value for the selected field(s)",
+                           self._keep_v2_conflict)
         menu.exec(self.entry_tree.viewport().mapToGlobal(pos))
 
     def _delete_selected(self):
@@ -1283,21 +1330,23 @@ class DetailPanel(QWidget):
         self.refresh()
         self.owner.refresh_tree()
 
-    def _keep_v2_selected(self):
-        entries = [e for e in self._selected_entries()
-                   if e.get("rule") == "id3v1_conflict"]
+    def _conflict_entries(self):
+        return [e for e in self._selected_entries()
+                if e.get("rule") in ("id3v1_conflict", "apev2_conflict")]
+
+    def _keep_v2_conflict(self):
+        entries = self._conflict_entries()
         if not entries:
             return
-        applier.resolve_v1_keep_v2(self.con, self.cfg["settings"], entries)
+        applier.set_keep_v2(self.con, self.cfg["settings"], entries, keep=True)
         self.refresh()
         self.owner.refresh_tree()
 
-    def _keep_v2_ape_selected(self):
-        entries = [e for e in self._selected_entries()
-                   if e.get("rule") == "apev2_conflict"]
+    def _use_old_conflict(self):
+        entries = self._conflict_entries()
         if not entries:
             return
-        applier.resolve_ape_keep_v2(self.con, self.cfg["settings"], entries)
+        applier.use_old_value(self.con, self.cfg["settings"], entries)
         self.refresh()
         self.owner.refresh_tree()
 
@@ -1367,11 +1416,14 @@ class DetailPanel(QWidget):
         _clear(self.lay)
         self.current = ("track", track_id)
         row = self.con.execute(
-            "SELECT filename, path, album_dir FROM tracks WHERE id=?",
+            "SELECT filename, path, album_dir, missing FROM tracks WHERE id=?",
             (track_id,)).fetchone()
         if row is None:
             return
-        fname, path, adir = row
+        fname, path, adir, missing = row
+        if missing:
+            self._show_gone_track(track_id, fname, path, adir)
+            return
         snap = db.latest_snapshot(self.con, track_id)
         tags = snap["tags"] if snap else {}
 
@@ -1380,9 +1432,10 @@ class DetailPanel(QWidget):
         name_row.addWidget(copy_button(lambda f=fname: f, "Copy file name"))
         name_row.addStretch(1)
         self.lay.addLayout(name_row)
-        meta = "ID3v%s%s · %s kbps · %s" % (
+        meta = "ID3v%s%s%s · %s kbps · %s" % (
             tags.get("_version", "?"),
             " + old ID3v1" if tags.get("_has_v1") else "",
+            " + APEv2" if tags.get("_has_ape") else "",
             (tags.get("_bitrate") or 0) // 1000,
             ", ".join("%s×%s" % (c["w"], c["h"]) for c in tags.get("_cover", [])) or "no cover")
         self.lay.addWidget(sel_label("<i>%s</i>" % meta))
@@ -1421,6 +1474,9 @@ class DetailPanel(QWidget):
         self.track_table = QTableWidget(len(fields), 4)
         self.track_table.setHorizontalHeaderLabels(
             ["Field", "Current", "Proposed", ""])
+        # no cell/row selection — values are selectable as text; the Proposed
+        # column is still editable (editing is independent of selection mode)
+        self.track_table.setSelectionMode(QAbstractItemView.NoSelection)
         self._track_id = track_id
         for r, field in enumerate(fields):
             it0 = QTableWidgetItem(field_label(field))
@@ -1457,6 +1513,7 @@ class DetailPanel(QWidget):
         self.track_table.setColumnWidth(2, max(240, self.track_table.columnWidth(2)))
         self.track_table.setColumnWidth(3, 64)
         enable_copy(self.track_table)
+        add_hover_copy(self.track_table, 1)   # copy icon on hover in Current col
         persist_header(self.cfg, "track_fields", self.track_table.horizontalHeader())
         self.lay.addWidget(self.track_table)
         all_cb = QCheckBox("Show all editable fields (composer, publisher, ISRC, …)")
