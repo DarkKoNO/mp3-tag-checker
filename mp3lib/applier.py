@@ -159,6 +159,20 @@ def apply_proposals(con, settings, artist_folders=None, album_dirs=None,
         for p in plist:
             changes[p["field"]] = p["proposed"]
             origin[p["field"]] = p["source"]
+        # a per-track cover proposal carries a marker, not bytes: resolve
+        # 'embed:folder_jpg' to the album's folder image at apply time
+        cover_val = changes.get("cover")
+        if isinstance(cover_val, list):
+            if cover_val and str(cover_val[0]).startswith("embed:folder_jpg"):
+                img = _load_album_cover(con, adir)
+                if img:
+                    changes["cover"] = img
+                    origin["cover"] = "folder.jpg"
+                else:
+                    del changes["cover"]
+                    errors.append((path, "folder image could not be read"))
+            else:
+                del changes["cover"]
         if adir in cover_for_album:
             mime, data, _cp = cover_for_album[adir]
             changes["cover"] = (mime, bytes(data))
@@ -183,8 +197,13 @@ def apply_proposals(con, settings, artist_folders=None, album_dirs=None,
     for adir, plist in album_level.items():
         for p in plist:
             if p["field"] == "folder_jpg":
+                # a 'replace…' proposal overwrites an existing (smaller) folder
+                # image regardless of the overwrite_folder_jpg setting
+                force = bool(p["proposed"]) and str(p["proposed"][0]).startswith(
+                    "replace")
                 try:
-                    if _export_folder_jpg(con, settings, adir):
+                    if _export_folder_jpg(con, settings, adir,
+                                          overwrite=True if force else None):
                         db.log_change(con, None, adir, "folder_jpg",
                                       [], ["written from embedded cover"], p["source"])
                     con.execute("UPDATE proposals SET status='applied' WHERE id=?",
@@ -221,8 +240,11 @@ def _write_folder_jpg_bytes(adir, data, overwrite):
     return True
 
 
-def _export_folder_jpg(con, settings, adir):
-    """folder.jpg from the largest embedded cover of the album's tracks."""
+def _export_folder_jpg(con, settings, adir, overwrite=None):
+    """folder.jpg from the largest embedded cover of the album's tracks.
+    overwrite=None uses the overwrite_folder_jpg setting; pass True to force."""
+    if overwrite is None:
+        overwrite = settings["overwrite_folder_jpg"]
     best = None
     for (path,) in con.execute(
             "SELECT path FROM tracks WHERE album_dir=? AND missing=0", (adir,)):
@@ -231,7 +253,22 @@ def _export_folder_jpg(con, settings, adir):
             best = got
     if best is None:
         return False
-    return _write_folder_jpg_bytes(adir, best[1], settings["overwrite_folder_jpg"])
+    return _write_folder_jpg_bytes(adir, best[1], overwrite)
+
+
+def _load_album_cover(con, adir):
+    """(mime, bytes) of the album's folder image (folder.jpg / cover.png / …),
+    or None when it is unset or unreadable."""
+    row = con.execute("SELECT cover_path FROM albums WHERE album_dir=?",
+                      (adir,)).fetchone()
+    if not row or not row[0]:
+        return None
+    try:
+        data = Path(row[0]).read_bytes()
+    except OSError:
+        return None
+    mime = "image/png" if Path(row[0]).suffix.lower() == ".png" else "image/jpeg"
+    return (mime, data)
 
 
 def album_history(con, album_dir):

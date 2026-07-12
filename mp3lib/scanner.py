@@ -5,11 +5,23 @@ import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
+from PIL import Image
+
 from . import db, rules, tagio
 
-COVER_NAMES = {"folder.jpg", "folder.jpeg", "folder.png", "cover.jpg", "cover.jpeg",
-               "cover.png", "front.jpg", "front.jpeg", "front.png", "album.jpg"}
+# ordered by preference — the first present in a folder is the album's cover
+COVER_NAMES = ("folder.jpg", "folder.jpeg", "folder.png", "cover.jpg", "cover.jpeg",
+               "cover.png", "front.jpg", "front.jpeg", "front.png", "album.jpg")
+COVER_SET = set(COVER_NAMES)
 ARTIST_IMG_NAMES = {"artist.jpg", "artist.jpeg", "artist.png"}
+
+
+def _pick_cover(lower_to_name):
+    """The actual filename of the best cover image in a folder, or None."""
+    for name in COVER_NAMES:
+        if name in lower_to_name:
+            return lower_to_name[name]
+    return None
 
 
 def collect(root: Path, entries):
@@ -21,8 +33,8 @@ def collect(root: Path, entries):
     missing = []
     errors = []
     artist_facts = {}   # entry -> {'artist_jpg': bool}
-    album_facts = {}    # album_dir -> {'artist_folder', 'folder_jpg': bool}
-    dir_has_cover = {}
+    album_facts = {}    # album_dir -> {'artist_folder', 'folder_jpg', 'cover_path'}
+    dir_cover = {}      # dirpath -> actual cover filename (or None)
 
     for entry in entries:
         folder = root / entry
@@ -36,8 +48,11 @@ def collect(root: Path, entries):
                            "folder could not be listed: %s" % err))
 
         for dirpath, _dirs, filenames in os.walk(folder, onerror=on_walk_error):
-            names_lower = {n.lower() for n in filenames}
-            dir_has_cover[dirpath] = bool(names_lower & COVER_NAMES)
+            lower_to_name = {}
+            for n in filenames:
+                lower_to_name.setdefault(n.lower(), n)
+            names_lower = set(lower_to_name)
+            dir_cover[dirpath] = _pick_cover(lower_to_name)
             if dirpath == str(folder) and names_lower & ARTIST_IMG_NAMES:
                 artist_facts[entry]["artist_jpg"] = True
             mp3_here = False
@@ -61,11 +76,18 @@ def collect(root: Path, entries):
                     files.append((p, entry, dirpath, st.st_size, st.st_mtime))
                     mp3_here = True
             if mp3_here:
-                album_facts[dirpath] = {"artist_folder": entry, "folder_jpg": False}
+                album_facts[dirpath] = {"artist_folder": entry,
+                                        "folder_jpg": False, "cover_path": None}
 
     for adir, facts in album_facts.items():
-        parent = str(Path(adir).parent)
-        facts["folder_jpg"] = dir_has_cover.get(adir) or dir_has_cover.get(parent, False)
+        # the album's own cover wins over one inherited from the artist folder
+        cover_name, cover_dir = dir_cover.get(adir), adir
+        if not cover_name:
+            parent = str(Path(adir).parent)
+            cover_name, cover_dir = dir_cover.get(parent), parent
+        if cover_name:
+            facts["folder_jpg"] = True
+            facts["cover_path"] = os.path.join(cover_dir, cover_name)
     return files, missing, artist_facts, album_facts, errors
 
 
@@ -90,11 +112,23 @@ def scan(con, settings, root, entries, progress=None, full=False, workers=8,
                     (entry, int(facts["artist_jpg"]), scan_id,
                      int(facts["artist_jpg"]), scan_id))
     for adir, facts in album_facts.items():
-        con.execute("INSERT INTO albums(album_dir, artist_folder, folder_jpg, last_scan_id)"
-                    " VALUES (?,?,?,?) ON CONFLICT(album_dir) DO UPDATE SET"
-                    " artist_folder=?, folder_jpg=?, last_scan_id=?",
-                    (adir, facts["artist_folder"], int(facts["folder_jpg"]), scan_id,
-                     facts["artist_folder"], int(facts["folder_jpg"]), scan_id))
+        cp = facts.get("cover_path")
+        w = h = None
+        if cp:
+            try:
+                with Image.open(cp) as im:
+                    w, h = im.size
+            except Exception:
+                w = h = None
+        con.execute("INSERT INTO albums(album_dir, artist_folder, folder_jpg,"
+                    " cover_path, cover_w, cover_h, last_scan_id)"
+                    " VALUES (?,?,?,?,?,?,?) ON CONFLICT(album_dir) DO UPDATE SET"
+                    " artist_folder=?, folder_jpg=?, cover_path=?, cover_w=?,"
+                    " cover_h=?, last_scan_id=?",
+                    (adir, facts["artist_folder"], int(facts["folder_jpg"]),
+                     cp, w, h, scan_id,
+                     facts["artist_folder"], int(facts["folder_jpg"]), cp, w, h,
+                     scan_id))
 
     # which files need (re)reading?
     known = {r[0]: (r[1], r[2], r[3]) for r in con.execute(
@@ -144,15 +178,20 @@ def scan(con, settings, root, entries, progress=None, full=False, workers=8,
     # refresh scan stamp of unchanged files; mark vanished files of scanned artists
     found_paths = {p for p, *_ in files}
     scanned_artists = list(artist_facts.keys())
+    # folders that WERE requested for this scan but no longer exist on disk: all
+    # of their tracks are gone. Included in the reconciliation scope so a whole
+    # deleted top-level/artist folder is marked missing (gray) — and removed when
+    # auto-remove is on — instead of lingering forever as 'present'.
+    scope_artists = scanned_artists + [m for m in missing if m not in artist_facts]
     for p, artist, adir, size, mtime in files:
         con.execute("UPDATE tracks SET last_scan_id=?, missing=0 WHERE path=?",
                     (scan_id, p))
     gone = []       # (track_id, path) of every not-found file in scan scope
-    if scanned_artists:
-        qs = ",".join("?" * len(scanned_artists))
+    if scope_artists:
+        qs = ",".join("?" * len(scope_artists))
         for (p, tid, was_missing) in con.execute(
                 "SELECT path, id, missing FROM tracks WHERE artist_folder IN (%s)"
-                % qs, scanned_artists).fetchall():
+                % qs, scope_artists).fetchall():
             if p not in found_paths:
                 if not was_missing:
                     con.execute("UPDATE tracks SET missing=1 WHERE id=?", (tid,))
@@ -165,8 +204,8 @@ def scan(con, settings, root, entries, progress=None, full=False, workers=8,
     if auto_remove_gone and gone:
         gone_albums = {r[0] for r in con.execute(
             "SELECT DISTINCT album_dir FROM tracks WHERE missing=1 AND"
-            " artist_folder IN (%s)" % ",".join("?" * len(scanned_artists)),
-            scanned_artists)} if scanned_artists else set()
+            " artist_folder IN (%s)" % ",".join("?" * len(scope_artists)),
+            scope_artists)} if scope_artists else set()
         for adir in gone_albums:
             if not Path(adir).is_dir():          # the whole album folder is gone
                 removed_albums.append(adir)

@@ -16,7 +16,8 @@ CZECH_CHARS = set("áčďéěíňóřšťúůýžÁČĎÉĚÍŇÓŘŠŤÚŮÝŽ"
 # Printable letters are NEVER evidence: è à ì ò ù are normal French/Italian
 # and ø å æ ð þ are normal Nordic text - repairing them broke valid tags.
 C1_RE = re.compile("[\u0080-\u009f]")
-IMAGE_RULES = {"cover_missing", "cover_tiny", "folder_jpg", "artist_jpg", "cover"}
+IMAGE_RULES = {"cover_missing", "cover_tiny", "cover_mismatch", "folder_jpg",
+               "artist_jpg", "cover"}
 
 TEXTUAL_FIELDS = ["title", "artist", "albumartist", "album", "genre", "comment",
                   "composer", "conductor", "remixer", "lyricist", "origartist",
@@ -50,6 +51,7 @@ RULE_LABELS = {
     "manual": "Manual edits",
     "cover_missing": "No embedded cover art",
     "cover_tiny": "Embedded cover too small",
+    "cover_mismatch": "Embedded cover and folder image differ in size",
     "track_gaps": "Gaps in track numbering",
     "year_inconsistent": "Year differs inside album",
     "artist_jpg": "Missing artist.jpg",
@@ -80,7 +82,7 @@ RULE_PRIORITY = [
     "publisher_from_comment",
     "album_inconsistent", "year_inconsistent", "track_gaps",
     "online_meta", "cover", "manual",
-    "cover_missing", "cover_tiny", "folder_jpg", "artist_jpg",
+    "cover_missing", "cover_tiny", "cover_mismatch", "folder_jpg", "artist_jpg",
 ]
 
 
@@ -238,8 +240,9 @@ RULE_DESCRIPTIONS = {
         " proposals and are never applied without your review.",
     "folder_jpg":
         "The album folder has no folder.jpg image (used by players and by"
-        " Windows Explorer as the folder thumbnail). The proposal exports the"
-        " largest cover embedded in the album's tracks into folder.jpg.",
+        " Windows Explorer as the folder thumbnail), or the one it has is"
+        " smaller than the embedded cover. The proposal writes the largest"
+        " cover embedded in the album's tracks into folder.jpg.",
     "cover":
         "Replaces the cover art embedded in all tracks of the album with the"
         " picture chosen in 'Find cover online...' (and writes folder.jpg"
@@ -249,14 +252,21 @@ RULE_DESCRIPTIONS = {
         "A value you typed yourself into a Proposed column. Applied exactly"
         " as written when you apply.",
     "cover_missing":
-        "No track of the album has embedded cover art, so players show a"
-        " blank square. There is no automatic fix - open the album and use"
-        " 'Find cover online...' to pick one.",
+        "The track has no embedded cover art, so players show a blank square."
+        " When the album folder has a cover image (folder.jpg / cover.jpg / …)"
+        " and 'Embed folder image' is on in Settings, the proposal embeds that"
+        " image; otherwise use 'Find cover online...' to pick one.",
     "cover_tiny":
         "The embedded cover is smaller than the minimum size set in Settings"
         " - Checks, so players upscale it and it looks blurry. Use 'Find"
         " cover online...' in the album view to replace it with a larger"
         " picture.",
+    "cover_mismatch":
+        "A track's embedded cover and the album's folder image are different"
+        " sizes. The proposal keeps the higher-resolution one: it embeds the"
+        " folder image when that is larger, or refreshes folder.jpg from the"
+        " embedded cover when the embedded art is larger. Controlled by 'Embed"
+        " folder image' in Settings.",
     "track_gaps":
         "The track numbers in the album are not continuous (e.g. 1, 2, 4 -"
         " number 3 is missing). This usually means a missing file or a"
@@ -294,7 +304,8 @@ CONFIGURABLE_RULES = [
     "apev2", "apev2_conflict", "apev2_rescue", "id3_version",
     "encoding", "track_format", "single_value", "multi_split", "albumartist",
     "artist_superset", "artist_sync", "plus_collab", "publisher_from_comment",
-    "year_inconsistent", "cover_tiny", "folder_jpg", "artist_jpg",
+    "year_inconsistent", "cover_tiny", "cover_mismatch", "folder_jpg",
+    "artist_jpg",
 ]
 
 
@@ -465,6 +476,11 @@ def v1_conflicts(v1, tags):
 
 APE_FIELDS = ("title", "artist", "albumartist", "album", "year",
               "comment", "composer", "track", "disc", "genre")
+
+
+def _dims_str(dims):
+    """'1000×1000 px' for a (w, h) tuple, or 'unknown size' when missing."""
+    return ("%d×%d px" % (dims[0], dims[1])) if dims else "unknown size"
 
 
 def ape_conflicts(ape, tags):
@@ -730,6 +746,17 @@ def evaluate(con, settings, artist_folders=None, album_dirs=None):
         artist = tracks[0]["artist"]
         nums = []
         artist_lists = []
+        # album folder image (folder.jpg / cover.jpg / …), for embedding into
+        # tracks that lack a cover and for keeping embedded/folder in sync at the
+        # higher resolution
+        embed_covers = settings.get("embed_folder_jpg", True)
+        acover = con.execute("SELECT cover_path, cover_w, cover_h FROM albums"
+                             " WHERE album_dir=?", (adir,)).fetchone()
+        cover_path = acover[0] if acover else None
+        cover_dims = (acover[1], acover[2]) if acover and acover[1] else None
+        cover_area = (cover_dims[0] * cover_dims[1]) if cover_dims else 0
+        emb_max_area = 0            # largest embedded cover seen in the album
+        emb_max_dims = None
 
         for t in tracks:
             tags = t["tags"]
@@ -889,14 +916,38 @@ def evaluate(con, settings, artist_folders=None, album_dirs=None):
 
             # -- cover
             covers = tags.get("_cover", [])
+            emb_area = max((c["w"] * c["h"] for c in covers if c["w"] and c["h"]),
+                           default=0)
+            emb_dims = None
+            if emb_area:
+                emb_dims = max(((c["w"], c["h"]) for c in covers if c["w"] and c["h"]),
+                               key=lambda wh: wh[0] * wh[1])
+                if emb_area > emb_max_area:
+                    emb_max_area, emb_max_dims = emb_area, emb_dims
             if not covers:
                 issue(tid, artist, adir, "cover_missing", RED,
                       "%s: no embedded cover art" % t["file"])
+                if embed_covers and cover_path:
+                    # fill it from the album's folder image, whatever its size
+                    propose(tid, artist, adir, "cover", [], ["embed:folder_jpg"],
+                            "cover_missing",
+                            note="Embed the album's folder image (%s) into this"
+                                 " track, which has no embedded cover"
+                                 % _dims_str(cover_dims))
             else:
                 px = min((min(c["w"], c["h"]) for c in covers if c["w"]), default=None)
                 if px is not None and px < settings["cover_min_px"]:
                     issue(tid, artist, adir, "cover_tiny", YEL,
                           "%s: embedded cover only %d px" % (t["file"], px))
+                # keep embedded and folder image at the higher resolution: when
+                # the folder image is larger, embed it into this track
+                if (embed_covers and cover_path and cover_area and emb_area
+                        and cover_area > emb_area):
+                    propose(tid, artist, adir, "cover", [], ["embed:folder_jpg"],
+                            "cover_mismatch",
+                            note="The album's folder image (%s) is larger than this"
+                                 " track's embedded cover (%s) — embed the larger"
+                                 " one" % (_dims_str(cover_dims), _dims_str(emb_dims)))
 
             # -- per-field ID3v1 / APEv2 rows: an applicable "use the old value"
             # offer for undecided fields and a reversible "keeping ID3v2" row for
@@ -970,15 +1021,18 @@ def evaluate(con, settings, artist_folders=None, album_dirs=None):
 
         def effective_vals(tid, field, fallback):
             """Current tag values, or what an open proposal will turn them into.
-            id3v1_conflict rows don't count: they only OFFER the old v1 value
-            as an alternative — treating that offer as the future value made
-            album-level rules fire on it and overwrite the offer itself
-            (e.g. v1 'Kiioto' vs v2 'Kiiōtō' spawned a bogus artist_superset
-            proposal and the conflict lost its current/proposed display)."""
+            id3v1_conflict / apev2_conflict rows don't count: they only OFFER the
+            old v1 / APEv2 value as an alternative — treating that offer as the
+            future value made album-level rules fire on it and overwrite the
+            offer itself (e.g. v1 'Kiioto' vs v2 'Kiiōtō' spawned a bogus
+            artist_superset proposal and the conflict lost its current/proposed
+            display; likewise an APEv2 'A & B' offer made a 2-value ID3v2 artist
+            look single, firing a bogus plus_collab / artist_superset)."""
             row = con.execute(
                 "SELECT proposed FROM proposals WHERE track_id=? AND field=?"
                 " AND status IN ('pending','edited','postponed')"
-                " AND (rule IS NULL OR rule != 'id3v1_conflict')",
+                " AND (rule IS NULL OR rule NOT IN"
+                " ('id3v1_conflict','apev2_conflict'))",
                 (tid, field)).fetchone()
             if row:
                 try:
@@ -1071,14 +1125,24 @@ def evaluate(con, settings, artist_folders=None, album_dirs=None):
                                 proposed, "artist_superset")
 
         # -- folder.jpg
-        row = con.execute("SELECT folder_jpg FROM albums WHERE album_dir=?",
-                          (adir,)).fetchone()
-        if row and not row[0] and settings["write_folder_jpg"]:
-            has_embedded = any(t["tags"].get("_cover") for t in tracks)
-            if issue(None, artist, adir, "folder_jpg", YEL,
-                     "No folder.jpg in album folder") and has_embedded:
-                propose(None, artist, adir, "folder_jpg",
-                        ["missing"], ["export from embedded cover"], "folder_jpg")
+        if settings["write_folder_jpg"]:
+            if not cover_path:
+                # no folder image at all -> export the largest embedded cover
+                if issue(None, artist, adir, "folder_jpg", YEL,
+                         "No folder.jpg in album folder") and emb_max_area:
+                    propose(None, artist, adir, "folder_jpg",
+                            ["missing"], ["export from embedded cover"], "folder_jpg")
+            elif (embed_covers and cover_area and emb_max_area
+                    and emb_max_area > cover_area):
+                # a folder image exists but the embedded cover is larger ->
+                # refresh folder.jpg from the higher-resolution embedded art
+                if issue(None, artist, adir, "folder_jpg", YEL,
+                         "folder image (%s) is smaller than the embedded cover"
+                         " (%s) — update it"
+                         % (_dims_str(cover_dims), _dims_str(emb_max_dims))):
+                    propose(None, artist, adir, "folder_jpg",
+                            ["smaller"], ["replace from embedded cover"],
+                            "folder_jpg")
 
     # drop stale postponed / needs-input rule proposals (not re-proposed above)
     stale = stale_candidates - touched_ids

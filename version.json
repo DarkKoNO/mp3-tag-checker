@@ -1,6 +1,17 @@
 {
-  "version": "1.5.0",
+  "version": "1.6.0",
   "changelog": [
+    {
+      "version": "1.6.0",
+      "date": "2026-07-13",
+      "changes": [
+        "Embed folder image as cover art: when a track has no embedded cover but the album folder has a folder.jpg / cover.jpg / …, the app now proposes embedding it. When both exist but differ in size, it keeps the higher-resolution one — embedding the folder image when it is larger, or refreshing folder.jpg from the embedded cover when the embedded art is larger. Controlled by a new 'Embed folder image' option in Settings → Checks.",
+        "Whole deleted folders are now reconciled: an 'All folders in the root' scan also covers folders that were removed from disk since the last scan, so their tracks turn gray (missing) — or are removed when 'Automatically remove whole gone albums' is ticked. Previously a fully deleted top-level folder was invisible to the scan and lingered as if still present.",
+        "APEv2 / ID3v1 conflicts are easier to read: a field you decided to keep at ID3v2 now shows a green '✓ keeping ID3v2' marker, while fields still awaiting a decision show 'decide me'. APEv2 rows also label which value is the current ID3v2 one. Fixes a case where an APEv2 alternative value was mistaken for the real tag, spawning bogus 'artist should hold multiple values' and 'artist should include the album artist' warnings.",
+        "Album view header redesigned: the first line now reads 'Album artist — Album (Year)', and the second line shows the full folder path with the Open-folder button beside it. The album cover thumbnail is aligned with the fields table and shows its pixel size underneath.",
+        "Cover viewer improvements: the mouse wheel now zooms toward the pointer and only zooms (never scrolls), and you can pan a zoomed-in image by dragging it with the left mouse button."
+      ]
+    },
     {
       "version": "1.5.0",
       "date": "2026-07-12",

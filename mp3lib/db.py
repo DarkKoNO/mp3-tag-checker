@@ -23,6 +23,8 @@ CREATE TABLE IF NOT EXISTS albums(
     album_dir TEXT PRIMARY KEY,
     artist_folder TEXT,
     folder_jpg INTEGER DEFAULT 0,   -- cover file in the dir or its parent
+    cover_path TEXT,                -- resolved path of that cover file
+    cover_w INTEGER, cover_h INTEGER,  -- its pixel size (for resolution compare)
     last_scan_id INTEGER
 );
 CREATE TABLE IF NOT EXISTS tracks(
@@ -122,6 +124,11 @@ def _migrate(con):
     if "note" not in cols:
         con.execute("ALTER TABLE proposals ADD COLUMN note TEXT")
     con.execute("DELETE FROM exceptions WHERE rule='id3v1_conflict'")
+    acols = [r[1] for r in con.execute("PRAGMA table_info(albums)")]
+    for col, decl in (("cover_path", "TEXT"), ("cover_w", "INTEGER"),
+                      ("cover_h", "INTEGER")):
+        if col not in acols:
+            con.execute("ALTER TABLE albums ADD COLUMN %s %s" % (col, decl))
     # Per-field "keep ID3v2" decisions for the v1/v2 and APEv2/v2 conflict flows:
     # a lightweight, reversible marker (NOT an exception) recording that the user
     # decided to keep the current ID3v2 value of THIS field over the old/foreign

@@ -3,7 +3,7 @@
 import json
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtCore import QEvent, QPoint, Qt, QThread, Signal
 from PySide6.QtGui import QColor, QPixmap
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog,
@@ -31,10 +31,13 @@ class ScanDialog(QDialog):
     """Choose what to scan in the active library: the current selection,
     everything, a folder list file, or manually picked folders."""
 
-    def __init__(self, lib, selected=None, parent=None):
+    def __init__(self, lib, selected=None, parent=None, known_folders=None):
         super().__init__(parent)
         self.lib = lib
         self.selected = sorted(selected or [])
+        # artist folders already in the library DB — so an 'All folders' scan
+        # still covers a folder that was deleted from disk (to mark it gone)
+        self.known_folders = list(known_folders or [])
         self.entries = []
         self.folders_txt_used = None
         self.setWindowTitle("Start check — %s" % lib["name"])
@@ -143,11 +146,14 @@ class ScanDialog(QDialog):
             return
         if self.r_all.isChecked():
             try:
-                self.entries = sorted((d.name for d in Path(self.lib["root"]).iterdir()
-                                       if d.is_dir()), key=str.lower)
+                disk = {d.name for d in Path(self.lib["root"]).iterdir()
+                        if d.is_dir()}
             except OSError as e:
                 QMessageBox.warning(self, "Cannot list root", str(e))
                 return
+            # include DB folders that vanished from disk so the scan marks them
+            # gone (grey) — or removes them when auto-remove is on
+            self.entries = sorted(disk | set(self.known_folders), key=str.lower)
         elif self.r_txt.isChecked():
             fp = Path(self.txt_path.text().strip())
             if not fp.is_absolute():
@@ -548,6 +554,9 @@ class SettingsPane(QWidget):
             cform.addRow(label, spx)
         chk(cform, "write_folder_jpg", "Propose folder.jpg where missing")
         chk(cform, "overwrite_folder_jpg", "Overwrite existing folder.jpg")
+        chk(cform, "embed_folder_jpg",
+            "Embed the folder image into tracks with no cover, and keep embedded"
+            " cover / folder image at the higher resolution")
         chk(cform, "check_plus_collab",
             "Warn when the album folder name contains '+' (collaboration) but"
             " artist / album artist holds only one value")
@@ -2252,6 +2261,7 @@ class ImageViewerDialog(QDialog):
         self.setWindowTitle(title)
         self.orig = pixmap
         self.scale = 1.0
+        self._pan_last = None
         lay = QVBoxLayout(self)
         self.scroll = QScrollArea()
         self.scroll.setAlignment(Qt.AlignCenter)
@@ -2260,6 +2270,10 @@ class ImageViewerDialog(QDialog):
         self.img_lbl.setAlignment(Qt.AlignCenter)
         self.scroll.setWidget(self.img_lbl)
         lay.addWidget(self.scroll, 1)
+        # the viewport owns wheel/mouse events; intercept them so the wheel only
+        # zooms (never scrolls) and a left-drag pans the image
+        self.scroll.viewport().installEventFilter(self)
+        self.scroll.viewport().setCursor(Qt.OpenHandCursor)
 
         bar = QHBoxLayout()
         self.info_lbl = QLabel()
@@ -2293,8 +2307,27 @@ class ImageViewerDialog(QDialog):
         self._apply()
 
     def _zoom(self, factor):
-        self.scale = max(0.05, min(self.scale * factor, 8.0))
+        # button/keyboard zoom keeps the viewport centre fixed
+        vp = self.scroll.viewport()
+        centre = QPoint(vp.width() // 2, vp.height() // 2)
+        self._zoom_at(factor, centre)
+
+    def _zoom_at(self, factor, vp_pos):
+        """Zoom while keeping the image point under ``vp_pos`` (a point in
+        viewport coordinates) fixed on screen."""
+        old_w, old_h = self.img_lbl.width(), self.img_lbl.height()
+        lbl_pos = self.img_lbl.mapFrom(self.scroll.viewport(), vp_pos)
+        fx = lbl_pos.x() / old_w if old_w else 0.5
+        fy = lbl_pos.y() / old_h if old_h else 0.5
+        new_scale = max(0.05, min(self.scale * factor, 8.0))
+        if abs(new_scale - self.scale) < 1e-9:
+            return
+        self.scale = new_scale
         self._apply()
+        hbar = self.scroll.horizontalScrollBar()
+        vbar = self.scroll.verticalScrollBar()
+        hbar.setValue(int(round(fx * self.img_lbl.width() - vp_pos.x())))
+        vbar.setValue(int(round(fy * self.img_lbl.height() - vp_pos.y())))
 
     def _apply(self):
         w = max(1, int(round(self.orig.width() * self.scale)))
@@ -2306,6 +2339,33 @@ class ImageViewerDialog(QDialog):
                               % (self.orig.width(), self.orig.height(),
                                  round(self.scale * 100)))
 
+    def eventFilter(self, obj, ev):
+        if obj is self.scroll.viewport():
+            et = ev.type()
+            if et == QEvent.Wheel:
+                self._zoom_at(1.25 if ev.angleDelta().y() > 0 else 1 / 1.25,
+                              ev.position().toPoint())
+                return True
+            if et == QEvent.MouseButtonPress and ev.button() == Qt.LeftButton:
+                self._pan_last = ev.position().toPoint()
+                self.scroll.viewport().setCursor(Qt.ClosedHandCursor)
+                return True
+            if et == QEvent.MouseMove and self._pan_last is not None:
+                pos = ev.position().toPoint()
+                delta = pos - self._pan_last
+                self._pan_last = pos
+                hbar = self.scroll.horizontalScrollBar()
+                vbar = self.scroll.verticalScrollBar()
+                hbar.setValue(hbar.value() - delta.x())
+                vbar.setValue(vbar.value() - delta.y())
+                return True
+            if et == QEvent.MouseButtonRelease and ev.button() == Qt.LeftButton:
+                self._pan_last = None
+                self.scroll.viewport().setCursor(Qt.OpenHandCursor)
+                return True
+        return super().eventFilter(obj, ev)
+
     def wheelEvent(self, ev):
+        # wheel over the button bar (outside the viewport) still zooms
         self._zoom(1.25 if ev.angleDelta().y() > 0 else 1 / 1.25)
         ev.accept()

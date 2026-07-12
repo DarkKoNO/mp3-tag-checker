@@ -373,19 +373,33 @@ class DetailPanel(QWidget):
                     if (not e["proposed"] and e["status"] != "needs_input"
                             and e["field"] in tagio.EDITABLE_FIELDS):
                         proposed_txt = CLEAR_MARKER   # empty new value = Clear
-                    if e.get("rule") == "id3v1_conflict":
+                    conflict = e.get("rule") in ("id3v1_conflict", "apev2_conflict")
+                    decided = conflict and (e.get("note") or "").startswith(
+                        "Decided:")
+                    if conflict:
+                        old_name = ("old ID3v1" if e.get("rule") == "id3v1_conflict"
+                                    else "APEv2")
                         cur_txt += "   (ID3v2 — current)"
-                        proposed_txt += "   (old ID3v1)"
+                        proposed_txt += "   (%s)" % old_name
                     src = e["source"]
-                    if e["status"] == "postponed":
+                    label_txt = e["label"]
+                    if decided:
+                        label_txt = "✓ keeping ID3v2"
+                        src += " · decided: keep ID3v2"
+                    elif conflict and e["status"] == "postponed":
+                        src += " · awaiting your decision"
+                    elif e["status"] == "postponed":
                         src += " · postponed"
-                    elif e["status"] == "needs_input":
+                    if e["status"] == "needs_input":
                         proposed_txt = "‹fill in manually›"
                         src += " · needs input"
                     item = QTreeWidgetItem(
-                        [e["file"], e["label"], field_lbl, cur_txt,
+                        [e["file"], label_txt, field_lbl, cur_txt,
                          proposed_txt, src])
-                    if e["status"] == "postponed":
+                    if decided:
+                        for c in range(6):
+                            item.setForeground(c, QColor(STATUS_COLORS["decided"]))
+                    elif e["status"] == "postponed":
                         for c in range(6):
                             item.setForeground(c, QColor(STATUS_COLORS["postponed"]))
                 else:
@@ -766,28 +780,42 @@ class DetailPanel(QWidget):
                  for tid, _f, _p in tracks}
 
         top_widget = QWidget()
-        head_row = QHBoxLayout(top_widget)
-        head_row.setContentsMargins(0, 0, 0, 0)
-        left_head = QVBoxLayout()
+        outer = QVBoxLayout(top_widget)
+        outer.setContentsMargins(0, 0, 0, 0)
         album_name = self.owner.album_display(adir)
+
+        def _uniform(field):
+            vals = {join_vals(snaps[tid].get(field, []), self.sep()) for tid in snaps}
+            return vals.pop() if len(vals) == 1 else ""
+        aartist = _uniform("albumartist") or artist
+        year = _uniform("year")
+
+        # row 1: «album artist — album (year)»
+        title_txt = "%s <span style='color:gray;'>—</span> %s" % (
+            html.escape(aartist), html.escape(album_name))
+        if year:
+            title_txt += " (%s)" % html.escape(year)
         title_row = QHBoxLayout()
-        title_row.addWidget(sel_label(
-            "<h2><span style='color:gray;'>Album:</span> %s</h2>"
-            % html.escape(album_name)))
+        title_row.addWidget(sel_label("<h2>%s</h2>" % title_txt))
         title_row.addWidget(copy_button(lambda n=album_name: n, "Copy album name"))
+        title_row.addStretch(1)
+        outer.addLayout(title_row)
+
+        # row 2: «Path: …» with the Open-folder button beside it
+        path_row = QHBoxLayout()
+        path_row.addWidget(sel_label(
+            "<span style='color:gray;'>Path:</span> %s" % html.escape(adir)))
         open_btn = QPushButton("Open folder")
         open_btn.setToolTip(adir)
         open_btn.clicked.connect(lambda: os.startfile(adir))
-        title_row.addWidget(open_btn)
-        title_row.addStretch(1)
-        left_head.addLayout(title_row)
-        artist_row = QHBoxLayout()
-        artist_row.addWidget(sel_label("<i><span style='color:gray;'>Artist:"
-                                       "</span> %s — %d tracks</i>"
-                                       % (html.escape(artist), len(tracks))))
-        artist_row.addWidget(copy_button(lambda a=artist: a, "Copy artist name"))
-        artist_row.addStretch(1)
-        left_head.addLayout(artist_row)
+        path_row.addWidget(open_btn)
+        path_row.addWidget(sel_label("<span style='color:gray;'>%d tracks</span>"
+                                     % len(tracks)))
+        path_row.addStretch(1)
+        outer.addLayout(path_row)
+
+        body_row = QHBoxLayout()
+        left_head = QVBoxLayout()
 
         # album-level current values (uniform or «varies»); every extended field
         # appears once any track has a value or a proposal for it, or all of
@@ -914,13 +942,18 @@ class DetailPanel(QWidget):
         all_cb.setChecked(show_all)
         all_cb.toggled.connect(self._toggle_album_all_fields)
         left_head.addWidget(all_cb)
-        head_row.addLayout(left_head, 1)
+        body_row.addLayout(left_head, 1)
 
-        # cover thumbnail from the first track
+        # cover thumbnail from the first track — top-aligned with the fields
+        # table, with the pixel resolution shown underneath
+        cover_col = QVBoxLayout()
         cover_lbl = QLabel()
         cover_lbl.setFixedSize(160, 160)
         cover_lbl.setAlignment(Qt.AlignCenter)
         cover_lbl.setStyleSheet("border: 1px solid #999;")
+        size_lbl = QLabel()
+        size_lbl.setAlignment(Qt.AlignCenter)
+        size_lbl.setStyleSheet("color: gray;")
         try:
             got = tagio.get_cover_data(tracks[0][2]) if tracks else None
             if got:
@@ -931,6 +964,7 @@ class DetailPanel(QWidget):
                 cover_lbl.setCursor(Qt.PointingHandCursor)
                 cover_lbl.setToolTip("Embedded cover of the first track —"
                                      " click to view at full resolution")
+                size_lbl.setText("Size: %d×%d" % (full.width(), full.height()))
                 aname = self.owner.album_display(adir)
 
                 def _open_cover(_ev, p=full, name=aname):
@@ -941,7 +975,11 @@ class DetailPanel(QWidget):
                 cover_lbl.setText("no cover")
         except Exception:
             cover_lbl.setText("(unreadable)")
-        head_row.addWidget(cover_lbl, 0, Qt.AlignTop)
+        cover_col.addWidget(cover_lbl)
+        cover_col.addWidget(size_lbl)
+        cover_col.addStretch(1)
+        body_row.addLayout(cover_col, 0)
+        outer.addLayout(body_row, 1)
 
         fname_by_id = {tid: f for tid, f, _p in tracks}
         entries = self._collect_album_entries(adir, fname_by_id)
@@ -1192,19 +1230,35 @@ class DetailPanel(QWidget):
                     if (not e["proposed"] and e["status"] != "needs_input"
                             and e["field"] in tagio.EDITABLE_FIELDS):
                         proposed_txt = CLEAR_MARKER   # empty new value = Clear
-                    if e.get("rule") == "id3v1_conflict":
+                    conflict = e.get("rule") in ("id3v1_conflict", "apev2_conflict")
+                    decided = conflict and (e.get("note") or "").startswith(
+                        "Decided:")
+                    if conflict:
+                        old_name = ("old ID3v1" if e.get("rule") == "id3v1_conflict"
+                                    else "APEv2")
                         cur_txt += "   (ID3v2 — current)"
-                        proposed_txt += "   (old ID3v1)"
+                        proposed_txt += "   (%s)" % old_name
                     src = e["source"]
-                    if e["status"] == "postponed":
+                    if decided:
+                        # a settled per-field 'keep ID3v2' decision — shown apart
+                        # from an undecided offer so you can see what is decided
+                        c0 = "[✓ keeping ID3v2] " + c0
+                        src += " · decided: keep ID3v2"
+                    elif conflict and e["status"] == "postponed":
+                        c0 = "[decide me] " + c0
+                        src += " · awaiting your decision"
+                    elif e["status"] == "postponed":
                         c0 = "[postponed] " + c0
                         src += " · postponed"
-                    elif e["status"] == "needs_input":
+                    if e["status"] == "needs_input":
                         proposed_txt = "‹fill in manually›"
                         src += " · needs input"
                     item = QTreeWidgetItem(
                         [c0, field_lbl, cur_txt, proposed_txt, src])
-                    if e["status"] == "postponed":
+                    if decided:
+                        for c in range(5):
+                            item.setForeground(c, QColor(STATUS_COLORS["decided"]))
+                    elif e["status"] == "postponed":
                         for c in range(5):
                             item.setForeground(c, QColor(STATUS_COLORS["postponed"]))
                     if e["track_id"] and e["field"] in tagio.EDITABLE_FIELDS:

@@ -298,6 +298,8 @@ DEFAULT_SETTINGS = {
     "cover_warn_px": 500,         # below this = worth improving (info)
     "write_folder_jpg": True,     # propose exporting folder.jpg from embedded art
     "overwrite_folder_jpg": False,
+    "embed_folder_jpg": True,     # embed folder image when a track has none, and
+                                  # sync embedded<->folder to the larger resolution
     # genre
     "genre_policy": "fill_missing",  # 'preserve' = never touch; 'fill_missing' = propose for empty
     # history

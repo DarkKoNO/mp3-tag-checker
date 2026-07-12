@@ -688,6 +688,11 @@ class MainWindow(QMainWindow):
 
         prop_fields = {(p["track_id"], p["field"]) for p in all_props
                        if p["track_id"]}
+        # an issue already answered by a proposal for the same rule (e.g. a
+        # cover_missing track that now has an 'embed folder image' proposal) is
+        # shown as that fixable proposal, not counted again as a raw problem
+        prop_rules = {(p["track_id"], p["rule"]) for p in all_props
+                      if p["track_id"] and p["rule"]}
         for tid, artist, adir, rule, sev in self.con.execute(
                 "SELECT track_id, artist_folder, album_dir, rule, severity FROM issues"):
             if not is_non_fixable(rule):
@@ -700,6 +705,8 @@ class MainWindow(QMainWindow):
                 continue
             f = missing_field_of(rule)
             if f and (tid, f) in prop_fields:
+                continue
+            if (tid, rule) in prop_rules:
                 continue
             gk = ("issue", rule)
             g = groups.setdefault(gk, {"label": rule_label(rule),
@@ -867,7 +874,10 @@ class MainWindow(QMainWindow):
                 (adir,)).fetchone()
             if row:
                 selected.add(row[0])
-        dlg = ScanDialog(self.lib, selected=sorted(selected), parent=self)
+        known = [r[0] for r in self.con.execute(
+            "SELECT DISTINCT artist_folder FROM tracks WHERE artist_folder IS NOT NULL")]
+        dlg = ScanDialog(self.lib, selected=sorted(selected), parent=self,
+                         known_folders=known)
         if not dlg.exec():
             return
         entries = dlg.entries

@@ -17,6 +17,7 @@ STATUS_COLORS = {
     "postponed": "#8f8f8f",     # gray   = postponed (visible, not applied)
     "exception": "#9575cd",     # purple = exception (permanently ignored)
     "attention": "#3874c8",     # accent = something needs confirming
+    "decided": "#2e9e5b",       # green  = a per-field 'keep ID3v2' decision
 }
 
 # Display names of metadata fields. FIELD_LABELS holds the active alias set
