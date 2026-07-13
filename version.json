@@ -1,6 +1,13 @@
 {
-  "version": "1.6.0",
+  "version": "1.6.1",
   "changelog": [
+    {
+      "version": "1.6.1",
+      "date": "2026-07-13",
+      "changes": [
+        "APEv2 tags that hold only technical data (ReplayGain / MP3Gain, no title/artist/…) are now detected and offered for removal like any other foreign APEv2 block. Previously such a tag was invisible to the app even though other tools (e.g. Mp3tag) reported it was still there. The complete tag is now snapshotted, so a removed ReplayGain-only APEv2 tag is fully restored by History revert. Do a full re-read (Rescan, or 'Re-read all files') to pick these up on files that have not otherwise changed."
+      ]
+    },
     {
       "version": "1.6.0",
       "date": "2026-07-13",

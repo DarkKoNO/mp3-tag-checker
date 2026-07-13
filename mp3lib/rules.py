@@ -689,10 +689,18 @@ def evaluate(con, settings, artist_folders=None, album_dirs=None):
                 f for f, _o, _v in undecided))
         if rescues:
             detail.append("rescuing into ID3v2 " + ", ".join(rescues))
-        msg = ("%s: %s — %s; the tag is then removed" % (t["file"], label,
-               "; ".join(detail))) if detail else \
-              ("%s: %s — checked, all its information is preserved in ID3v2"
-               % (t["file"], label))
+        if detail:
+            msg = ("%s: %s — %s; the tag is then removed"
+                   % (t["file"], label, "; ".join(detail)))
+        elif not data:
+            # a foreign block with nothing we track (e.g. an APEv2 tag holding
+            # only ReplayGain / MP3Gain data) — still removed as clutter
+            msg = ("%s: %s carries no metadata (only technical tags such as"
+                   " ReplayGain / MP3Gain) — the tag is removed"
+                   % (t["file"], label))
+        else:
+            msg = ("%s: %s — checked, all its information is preserved in ID3v2"
+                   % (t["file"], label))
         issue(tid, artist, adir, remove_rule, YEL, msg)
         if not rescues:
             propose(tid, artist, adir, pseudo_field, ["present"], ["remove"],

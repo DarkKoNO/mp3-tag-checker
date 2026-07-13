@@ -325,11 +325,14 @@ def revert_album(con, settings, album_dir, batch_id, progress=None):
         if tgt.get("_has_v1") and tgt.get("_v1") and not current.get("_has_v1"):
             keep_v1 = tagio.build_id3v1(tgt["_v1"])
             changes.setdefault("_id3v1", ["restore"])
-        # restore a removed APEv2 tag from its recorded contents
+        # restore a removed APEv2 tag from its recorded contents — the full
+        # capture (all keys, ReplayGain included) when available, else the older
+        # mapped-metadata snapshot
         keep_ape = None
-        if tgt.get("_has_ape") and tgt.get("_ape") and not current.get("_has_ape"):
-            keep_ape = tgt["_ape"]
-            changes.setdefault("_apev2", ["restore"])
+        if tgt.get("_has_ape") and not current.get("_has_ape"):
+            keep_ape = tgt.get("_ape_full") or tgt.get("_ape")
+            if keep_ape:
+                changes.setdefault("_apev2", ["restore"])
         # restore a replaced cover if the old picture was remembered
         def _cov_sig(tags):
             return [(c.get("bytes"), c.get("w"), c.get("h"))

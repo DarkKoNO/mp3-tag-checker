@@ -5,13 +5,14 @@ Tag state format (used in snapshots and everywhere else): a dict of
 plus underscore metadata: _version, _has_v1, _length, _bitrate, _cover, _enc.
 """
 
+import base64
 import os
 from collections import Counter
 from io import BytesIO
 
 import mutagen.apev2
 import mutagen.id3
-from mutagen.apev2 import APEv2, APENoHeaderError
+from mutagen.apev2 import APEv2, APENoHeaderError, APEValue
 from mutagen.id3 import APIC, COMM
 from mutagen.mp3 import MP3
 from PIL import Image
@@ -186,17 +187,24 @@ def read_id3v1(path):
     return out or None
 
 
-def read_apev2(path):
-    """Parse an APEv2 tag appended to the file, if present.
-    Returns {field: [values]} with only the mapped, non-empty text fields
-    (our field names, not the raw APEv2 keys), or None. Non-text values
-    (binary, replay-gain, custom keys we don't map) are ignored - they carry
-    no metadata we track, so they never block removal."""
+def _open_apev2(path):
+    """The file's APEv2 tag object, or None when it has none."""
     try:
-        tag = APEv2(path)
+        return APEv2(path)
     except APENoHeaderError:
         return None
     except Exception:
+        return None
+
+
+def read_apev2(path, tag=None):
+    """The mapped, non-empty APEv2 text metadata as {field: [values]} (our field
+    names, not raw APEv2 keys), or None when there is no such metadata. Unmapped
+    keys (ReplayGain / MP3Gain, custom, binary) are ignored here — they carry no
+    metadata we reconcile against ID3v2. Physical presence of the tag (even when
+    it holds only ReplayGain) is reported separately by read_apev2_full()."""
+    tag = _open_apev2(path) if tag is None else tag
+    if tag is None:
         return None
     out = {}
     for key in tag.keys():
@@ -212,14 +220,50 @@ def read_apev2(path):
     return out or None
 
 
+def read_apev2_full(path, tag=None):
+    """The COMPLETE APEv2 tag as a JSON-safe list of [key, kind, payload]
+    (payload = list of strings for text, base64 for binary/other), or None when
+    the file has no APEv2 tag at all. Captures every key — including the
+    ReplayGain / MP3Gain ones that read_apev2() ignores — so the tag counts as
+    present and a removed tag can be restored faithfully by history revert."""
+    tag = _open_apev2(path) if tag is None else tag
+    if tag is None:
+        return None
+    items = []
+    for key in tag.keys():
+        val = tag[key]
+        kind = getattr(val, "kind", 0)
+        if kind == 0:                           # text
+            items.append([key, 0, [str(s) for s in list(val)]])
+        else:                                   # binary / external
+            raw = getattr(val, "value", b"")
+            if not isinstance(raw, (bytes, bytearray)):
+                raw = str(raw).encode("utf-8", "replace")
+            items.append([key, kind, base64.b64encode(bytes(raw)).decode("ascii")])
+    return items
+
+
 def build_apev2(path, ape):
-    """(Re)write an APEv2 tag onto the file from the dict read_apev2() produced.
-    Used by history revert to restore a previously removed APEv2 tag."""
+    """(Re)write an APEv2 tag onto the file from the mapped {field: [values]}
+    dict read_apev2() produced. Fallback for snapshots without a full capture."""
     tag = APEv2()
     for field, key in FIELD_TO_APEV2.items():
         vals = [str(v) for v in (ape.get(field) or []) if str(v).strip()]
         if vals:
             tag[key] = vals
+    if len(tag):
+        tag.save(path)
+
+
+def build_apev2_full(path, items):
+    """Restore a complete APEv2 tag captured by read_apev2_full() (every key,
+    ReplayGain included). Used by history revert."""
+    tag = APEv2()
+    for key, kind, payload in items:
+        if kind == 0:
+            tag[key] = list(payload)
+        else:
+            tag[key] = APEValue(base64.b64decode(payload), kind)
     if len(tag):
         tag.save(path)
 
@@ -247,11 +291,18 @@ def read_tags(path):
         # full ID3v1 content is kept in every snapshot, so even after the v1
         # tag is stripped its data stays in the database history forever
         t["_v1"] = v1
-    ape = read_apev2(path)
-    t["_has_ape"] = ape is not None
+    # a physical APEv2 tag counts as present even if it only holds ReplayGain /
+    # MP3Gain data (no metadata) — such a foreign block is still detected and
+    # offered for removal, just like any other APEv2 leftover
+    ape_tag = _open_apev2(path)
+    t["_has_ape"] = ape_tag is not None
+    ape = read_apev2(path, ape_tag)
     if ape:
         # like _v1: kept in every snapshot so a removed APEv2 tag stays in history
         t["_ape"] = ape
+    if ape_tag is not None:
+        # full capture (all keys, ReplayGain included) so revert is faithful
+        t["_ape_full"] = read_apev2_full(path, ape_tag)
     for field, fid in FIELD_FRAMES.items():
         if tags is None:
             t[field] = []
@@ -374,7 +425,11 @@ def write_changes(path, changes, settings, keep_v1_bytes=None,
     # any ID3v1 block so the on-disk order stays [audio][APEv2][ID3v1].
     strip = settings.get("strip_apev2", True) if strip_ape is None else strip_ape
     if keep_ape_data is not None:
-        build_apev2(path, keep_ape_data)
+        # a list = full capture (read_apev2_full); a dict = mapped metadata only
+        if isinstance(keep_ape_data, list):
+            build_apev2_full(path, keep_ape_data)
+        else:
+            build_apev2(path, keep_ape_data)
     elif strip:
         try:
             mutagen.apev2.delete(path)
