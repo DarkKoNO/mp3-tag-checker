@@ -8,7 +8,7 @@ import json
 import re
 from collections import Counter, defaultdict
 
-from . import db
+from . import db, tagio
 
 CZECH_CHARS = set("áčďéěíňóřšťúůýžÁČĎÉĚÍŇÓŘŠŤÚŮÝŽ")
 # Invisible C1 control characters are the ONLY trigger for the cp1250-as-
@@ -888,7 +888,10 @@ def evaluate(con, settings, artist_folders=None, album_dirs=None):
             # -- several values in a field that should hold one (MediaMonkey's
             # duplicated year etc.); identical duplicates collapse automatically
             for field, vals in list(tags.items()):
+                # extra fields (named comments, TXXX, lyrics) are free-form data
+                # the rules have no opinion about — never nag about them
                 if (field.startswith("_") or field in mv_fields
+                        or tagio.is_extra(field)
                         or not isinstance(vals, list) or len(vals) < 2):
                     continue
                 if issue(tid, artist, adir, "single_value", YEL,

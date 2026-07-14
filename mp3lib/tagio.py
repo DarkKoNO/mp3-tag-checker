@@ -78,6 +78,116 @@ PRIMARY_FIELDS = EDITABLE_FIELDS[:9]
 # pseudo fields carried in proposals; applying them = "just rewrite the file"
 PSEUDO_FIELDS = {"_id3v1", "_apev2", "_version", "_encoding"}
 
+# --------------------------------------------------------------- extra fields
+# Every text-carrying ID3 frame that the fixed table above does NOT cover is
+# still read, searched and edited — as a DYNAMIC field whose name is
+# 'x:' + the frame's mutagen HashKey:
+#   x:COMM:MusicMatch_Situation:eng   a named comment (COMM with a description)
+#   x:TXXX:Acoustid Fingerprint       a custom TXXX tag
+#   x:USLT::eng                       unsynchronised lyrics
+#   x:TENC                            any other text frame (encoded by, …)
+# The key round-trips: it identifies exactly one frame (id + description +
+# language), so a value edited in the GUI is written back into that same frame
+# and nothing else in the file is touched. Rules never fire on these fields —
+# they are free-form data the app has no opinion about.
+EXTRA_PREFIX = "x:"
+_LANG_FRAMES = ("COMM", "USLT", "SYLT")     # HashKey ends with the language
+_MAPPED_FRAMES = set(FIELD_FRAMES.values())
+# frames holding data we handle elsewhere or that carry no editable text
+_SKIP_FRAMES = {"APIC", "PRIV", "GEOB", "MCDI", "POPM", "UFID", "PCNT", "ETCO",
+                "SYLT", "RVA2", "EQU2", "AENC", "ENCR", "GRID", "LINK", "POSS",
+                "RBUF", "SIGN", "SEEK", "ASPI", "COMR", "USER", "OWNE"}
+# friendlier names for the standard frames that have no field of their own
+FRAME_NAMES = {
+    "COMM": "Comment", "TXXX": "Custom", "USLT": "Lyrics", "WXXX": "URL",
+    "TENC": "Encoded by", "TSSE": "Encoder settings", "TLEN": "Length",
+    "TFLT": "File type", "TMED": "Media type", "TOAL": "Original album",
+    "TOLY": "Original lyricist", "TOFN": "Original filename",
+    "TORY": "Original year", "TOWN": "File owner", "TRSN": "Radio station",
+    "TRSO": "Radio station owner", "TDLY": "Playlist delay",
+    "TDEN": "Encoding time", "TDTG": "Tagging time", "TPRO": "Produced notice",
+    "TKEY": "Initial key", "TSIZ": "Size", "TDAT": "Date", "TIME": "Time",
+    "TYER": "Year (v2.3)", "TRDA": "Recording dates",
+    "WOAR": "Artist URL", "WOAF": "File URL", "WOAS": "Source URL",
+    "WCOM": "Commercial URL", "WCOP": "Copyright URL", "WPUB": "Publisher URL",
+    "WPAY": "Payment URL", "WORS": "Radio station URL",
+}
+
+
+def is_extra(field):
+    """True for a dynamic field key produced by read_tags() (see above)."""
+    return isinstance(field, str) and field.startswith(EXTRA_PREFIX)
+
+
+def parse_extra(field):
+    """('COMM', description, language) of an extra field key.
+    Language is '' for frames that have none; a description may contain ':'."""
+    body = field[len(EXTRA_PREFIX):]
+    fid, _, rest = body.partition(":")
+    lang = ""
+    if fid in _LANG_FRAMES:
+        rest, _, lang = rest.rpartition(":")
+    return fid, rest, lang
+
+
+def extra_label(field):
+    """How an extra field is shown in the GUI: 'Comment [MusicMatch_Situation]'."""
+    fid, desc, _lang = parse_extra(field)
+    name = FRAME_NAMES.get(fid, fid)
+    return "%s [%s]" % (name, desc) if desc else name
+
+
+def _frame_values(frame):
+    """The frame's text as a list of strings, or None when it carries none."""
+    text = getattr(frame, "text", None)
+    if isinstance(text, str):                   # USLT: one blob of lyrics
+        return [text] if text.strip() else []
+    if text is not None:
+        return [str(x) for x in text if str(x).strip()]
+    url = getattr(frame, "url", None)           # W*** link frames
+    if isinstance(url, str):
+        return [url] if url.strip() else []
+    return None
+
+
+def read_extra(tags):
+    """{field_key: [values]} for every text frame outside FIELD_FRAMES."""
+    out = {}
+    if tags is None:
+        return out
+    for frame in tags.values():
+        fid = frame.FrameID
+        if fid in _SKIP_FRAMES:
+            continue
+        # COMM is mapped, but only its unnamed frame is the 'comment' field —
+        # the named ones (MusicMatch_Situation, Songs-DB_Occasion, …) are extras
+        if fid in _MAPPED_FRAMES and not (fid == "COMM" and frame.desc):
+            continue
+        vals = _frame_values(frame)
+        if vals:
+            out[EXTRA_PREFIX + frame.HashKey] = vals
+    return out
+
+
+def _build_extra_frame(field, values):
+    """The frame an extra field key + values describes, or None if unbuildable."""
+    fid, desc, lang = parse_extra(field)
+    cls = getattr(mutagen.id3, fid, None)
+    if cls is None or not values:
+        return None
+    if fid == "USLT":
+        return cls(encoding=3, lang=lang or "eng", desc=desc,
+                   text="\n".join(values))
+    if fid in _LANG_FRAMES:
+        return cls(encoding=3, lang=lang or "eng", desc=desc, text=values)
+    if issubclass(cls, mutagen.id3.TextFrame):       # T*** incl. TXXX
+        return cls(encoding=3, desc=desc, text=values) if fid == "TXXX" \
+            else cls(encoding=3, text=values)
+    if issubclass(cls, mutagen.id3.UrlFrame):        # W*** links
+        return cls(encoding=3, desc=desc, url=values[0]) if fid == "WXXX" \
+            else cls(url=values[0])
+    return None
+
 # APEv2 tags (a foreign block many old rippers / MP3Gain append to MP3s) use
 # free-text, case-insensitive keys. Map the standard ones onto our field names
 # so an APEv2 leftover is compared against ID3v2 the same way ID3v1 is. Keys
@@ -269,12 +379,13 @@ def build_apev2_full(path, items):
 
 
 def _main_comm(tags):
-    """The primary comment frame (empty description), if any."""
-    frames = tags.getall("COMM")
-    for fr in frames:
+    """The primary comment frame = the one with an EMPTY description.
+    A named comment (COMM:MusicMatch_Situation:eng and friends) is a tag in its
+    own right and is handled as an extra field, never as 'the' comment."""
+    for fr in tags.getall("COMM"):
         if fr.desc == "":
             return fr
-    return frames[0] if frames else None
+    return None
 
 
 def read_tags(path):
@@ -317,14 +428,10 @@ def read_tags(path):
                 t[field] = [g for g in fr.genres if g.strip()]
             else:
                 t[field] = [str(x) for x in fr.text if str(x).strip()]
-    txxx = {}
-    if tags:
-        for fr in tags.getall("TXXX"):
-            vals = [str(x) for x in fr.text if str(x).strip()]
-            if vals:
-                txxx[fr.desc] = vals
-    if txxx:
-        t["_txxx"] = txxx
+    # every remaining text frame (named comments, TXXX, lyrics, …) becomes a
+    # field of its own, so it is snapshotted, searchable and editable like the
+    # rest — nothing in the file stays invisible to the app
+    t.update(read_extra(tags))
     covers = []
     encs = Counter()
     if tags:
@@ -388,8 +495,25 @@ def write_changes(path, changes, settings, keep_v1_bytes=None,
             tags.add(APIC(encoding=3, mime=mime, type=3, desc="", data=data))
             applied.append((field, old, ["new cover, %d KB" % (len(data) // 1024)]))
             continue
-        fid = FIELD_FRAMES[field]
         value = [v for v in (value or []) if str(v).strip()]
+        if is_extra(field):
+            # a dynamic field addresses exactly one frame by its HashKey:
+            # replace that frame, or drop it when the value is cleared
+            key = field[len(EXTRA_PREFIX):]
+            fr = tags.get(key)
+            old = (_frame_values(fr) or []) if fr is not None else []
+            if value:
+                new_frame = _build_extra_frame(field, value)
+                if new_frame is None:
+                    continue        # frame type we cannot build: leave it alone
+                tags.pop(key, None)  # its HashKey can change with the value
+                tags.add(new_frame)
+            elif fr is not None:
+                tags.pop(key, None)
+            if old != value:
+                applied.append((field, old, value))
+            continue
+        fid = FIELD_FRAMES[field]
         if fid == "COMM":
             fr = _main_comm(tags)
             old = [str(x) for x in fr.text] if fr else []

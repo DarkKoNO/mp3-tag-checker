@@ -342,6 +342,11 @@ class MainWindow(QMainWindow):
         self._actions_grp.setVisible(on_lib)
         self._internet_grp.setVisible(on_lib)
         self.sort_bar.setVisible(on_lib)
+        if idx == 1:
+            # back to Search: the conditions and results are still there (the
+            # page is never rebuilt) — put the cursor back on the row that was
+            # opened last, and pick up tags a scan has found since
+            self.search_pane.restore_state()
         if idx == 2:
             self.changelog_pane.reload()
 
@@ -364,8 +369,63 @@ class MainWindow(QMainWindow):
         self.stack.insertWidget(pos, self.search_pane)
 
     def open_track_from_search(self, track_id):
+        """Open a search hit in the library: reveal and SELECT it in the tree on
+        the left, which is what makes the right-hand panel show it. Selecting the
+        node (rather than only filling the panel) keeps the two sides in step, so
+        the album around it can be expanded, edited and applied straight away."""
         self.switch_page(0)
-        self.detail.show_track(track_id)
+        if not self._reveal(("track", track_id)):
+            self.detail.show_track(track_id)    # hidden by a filter: at least show it
+
+    def open_album_from_search(self, album_dir):
+        """Same, for a result row that stands for a whole album."""
+        self.switch_page(0)
+        if not self._reveal(("album", album_dir)):
+            self.detail.show_album(album_dir)
+
+    def _reveal(self, want):
+        """Expand down to the (kind, key) node, select it and scroll it into
+        view. The tree must be the artist catalog for that to be possible, and
+        the severity filter must not be hiding the node — both are corrected
+        when needed. False when the node is nowhere to be found."""
+        from PySide6.QtCore import QItemSelectionModel
+        if not self.artist_btn.isChecked():
+            # the change-type tree has no place for an arbitrary track
+            self.artist_btn.setChecked(True)    # triggers refresh_tree
+        if self.filter_edit.text():
+            self.filter_edit.clear()            # a typed filter could hide it
+        idx = self._find_item(want)
+        if idx is None and self.sev_combo.currentIndex() != 0:
+            # a clean track is invisible under 'Red only' etc. — the user asked
+            # for this one, so widen the filter to All rather than lose it
+            self.sev_combo.setCurrentIndex(0)   # triggers refresh_tree
+            idx = self._find_item(want)
+        if idx is None:
+            return False
+        pidx = self.proxy.mapFromSource(idx)
+        parent = pidx.parent()
+        while parent.isValid():
+            self.tree.setExpanded(parent, True)
+            parent = parent.parent()
+        sm = self.tree.selectionModel()
+        sm.setCurrentIndex(pidx, QItemSelectionModel.ClearAndSelect
+                           | QItemSelectionModel.Rows)   # -> _selection_changed
+        self.tree.scrollTo(pidx, QAbstractItemView.PositionAtCenter)
+        self.tree.setFocus()
+        return True
+
+    def _find_item(self, want):
+        """The source-model index of the (kind, key) node, or None."""
+        def walk(parent):
+            for r in range(self.model.rowCount(parent)):
+                idx = self.model.index(r, 0, parent)
+                if (idx.data(KIND_ROLE), idx.data(KEY_ROLE)) == want:
+                    return idx
+                found = walk(idx)
+                if found is not None:
+                    return found
+            return None
+        return walk(self.model.invisibleRootItem().index())
 
     def online_filter(self):
         """Set for db.open_proposals: which internet proposal kinds are visible."""

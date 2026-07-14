@@ -1781,8 +1781,13 @@ class SearchPane(QWidget):
         super().__init__(parent)
         from .. import tagio
         self.owner = owner
-        self.fields = list(tagio.EDITABLE_FIELDS)
+        # the known fields plus every dynamic tag the library actually carries
+        # (named comments, custom TXXX, lyrics — see tagio), so nothing in the
+        # files is beyond reach of a search
+        self.fields = list(tagio.EDITABLE_FIELDS) + self._library_extras()
         self._last_edit = None
+        self._by_album = False
+        self._last_row = -1     # result row the user opened last (restored on return)
         lay = QVBoxLayout(self)
         lay.addWidget(QLabel("<b>Search metadata</b> — each group is one pair of"
                              " brackets; e.g. (artist contains X <i>or</i> Y)"
@@ -1804,6 +1809,13 @@ class SearchPane(QWidget):
         go = QPushButton("Search")
         go.clicked.connect(self.run_search)
         row.addWidget(go)
+        self.group_cb = QCheckBox("Group by album")
+        self.group_cb.setToolTip(
+            "Show one row per ALBUM instead of one per matching track — the"
+            " list to work through when you want to fix whole albums."
+            " Double-click opens the album in the library.")
+        self.group_cb.toggled.connect(self._group_toggled)
+        row.addWidget(self.group_cb)
         self.count_lbl = QLabel("")
         row.addWidget(self.count_lbl)
         row.addStretch(1)
@@ -1814,10 +1826,12 @@ class SearchPane(QWidget):
         self.results.itemDoubleClicked.connect(self._open)
         enable_copy(self.results)
         lay.addWidget(self.results, 1)
-        lay.addWidget(QLabel("<i>Double-click a result to open the track;"
-                             " Ctrl+C copies the selected rows.</i>"))
-        self._rows = []
+        self.hint_lbl = QLabel()
+        lay.addWidget(self.hint_lbl)
+        self._hits = []     # per-track matches, as found (grouping is a view of them)
+        self._rows = []     # what the table currently shows, row by row
         self._add_group()
+        self._update_hint()
         persist_header(self.owner.cfg, "search_results",
                        self.results.horizontalHeader())
 
@@ -1884,6 +1898,54 @@ class SearchPane(QWidget):
             return text == ""
         return text != ""      # is not empty
 
+    @staticmethod
+    def _describe(pairs, limit=140):
+        """The 'Matched' text: 'Field: value' for every field the conditions
+        actually hit on, duplicates dropped, long values cut (a fingerprint or
+        a lyrics sheet would otherwise fill the row)."""
+        out = []
+        for field, value in dict.fromkeys(pairs):       # dedupe, keep order
+            value = " ".join(value.split())             # newlines (lyrics!) → one line
+            if len(value) > limit:
+                value = value[:limit] + "…"
+            out.append("%s: %s" % (field_label(field), value or "(empty)"))
+        return " · ".join(out)
+
+    def _library_extras(self):
+        """The dynamic tag keys present in this library (empty without one)."""
+        from .. import db as _db
+        if getattr(self.owner, "con", None) is None:
+            return []
+        try:
+            return _db.extra_fields(self.owner.con)
+        except Exception:
+            return []
+
+    def refresh_fields(self):
+        """Re-read the library's dynamic tags into the field pickers.
+        Called when the Search page is opened: a scan may have found new ones.
+        Existing choices are preserved."""
+        from .. import tagio
+        fields = list(tagio.EDITABLE_FIELDS) + self._library_extras()
+        if fields == self.fields:
+            return
+        self.fields = fields
+        for grp in self.groups():
+            for i in range(grp.cond_lay.count()):
+                w = grp.cond_lay.itemAt(i).widget()
+                if w is None or not hasattr(w, "_parts"):
+                    continue
+                fld = w._parts[0]
+                keep = fld.currentData()
+                fld.blockSignals(True)
+                fld.clear()
+                fld.addItem("(any field)", None)
+                for f in fields:
+                    fld.addItem(field_label(f), f)
+                idx = fld.findData(keep)
+                fld.setCurrentIndex(idx if idx >= 0 else 0)
+                fld.blockSignals(False)
+
     def run_search(self):
         from .. import tagio
         con = self.owner.con
@@ -1906,48 +1968,139 @@ class SearchPane(QWidget):
                 continue
             tags = json.loads(tags_json)
             texts = {f: sep.join(tags.get(f, [])) for f in tagio.EDITABLE_FIELDS}
-            shown = []
+            # the file's dynamic tags are searchable too — both when picked by
+            # name and under '(any field)'
+            texts.update({f: sep.join(v) for f, v in tags.items()
+                          if tagio.is_extra(f) and isinstance(v, list)})
             group_results = []
+            group_found = []        # per group: the (field, value) pairs it hit on
             for mode_any, conds in group_specs:
                 passes = []
+                found = []
                 for field, op, val in conds:
                     negative = op.startswith("not ") or op == "is empty"
                     if field is None:       # (any field)
                         if negative:
+                            # every field passes — naming them all says nothing
                             p = all(self._match(op, t, val) for t in texts.values())
                         else:
-                            p = any(self._match(op, t, val) for t in texts.values())
+                            # report WHICH field(s) the value was found in
+                            hit = [f for f, t in texts.items()
+                                   if self._match(op, t, val)]
+                            p = bool(hit)
+                            found += [(f, texts[f]) for f in hit]
                     else:
                         p = self._match(op, texts.get(field, ""), val)
-                        shown.append("%s = %s" % (field_label(field),
-                                                  texts.get(field, "")))
+                        # a passing condition on a named field reports its value;
+                        # for a negative one ('is empty', 'not contains') that
+                        # value is the point of the search, so show it too
+                        if p:
+                            found.append((field, texts.get(field, "")))
                     passes.append(p)
                 group_results.append(any(passes) if mode_any else all(passes))
+                group_found.append(found)
             ok = ((any(group_results) if top_any else all(group_results))
                   if group_results else True)
             if ok:
-                hits.append((tid, meta[tid], "; ".join(dict.fromkeys(shown))))
+                # only the groups that actually contributed to the hit
+                shown = [p for res, found in zip(group_results, group_found)
+                         if res for p in found]
+                hits.append((tid, meta[tid], self._describe(shown)))
             if len(hits) >= 2000:
                 break
-        self._rows = hits
-        self.count_lbl.setText("%d matches%s" % (
-            len(hits), " (capped at 2000)" if len(hits) >= 2000 else ""))
+        self._hits = hits
+        self._last_row = -1
+        self._fill_results()
+
+    def _group_toggled(self, on):
+        self._by_album = on
+        self._update_hint()
+        self._fill_results()        # same hits, other view — no new search
+
+    def _update_hint(self):
+        self.hint_lbl.setText(
+            "<i>Double-click an album to open it in the library (its tracks stay"
+            " here); Ctrl+C copies the selected rows.</i>" if self._by_album else
+            "<i>Double-click a result to open the track in the library;"
+            " Ctrl+C copies the selected rows.</i>")
+
+    def _album_rows(self):
+        """The per-track hits collapsed to one row per album, order preserved."""
+        albums = {}
+        for tid, (artist, adir, _fname), shown in self._hits:
+            a = albums.setdefault(adir, {"artist": artist, "tids": [],
+                                         "shown": []})
+            a["tids"].append(tid)
+            if shown and shown not in a["shown"]:
+                a["shown"].append(shown)
+        return list(albums.items())
+
+    def _fill_results(self):
+        capped = len(self._hits) >= 2000
         self.results.clear()
-        self.results.setColumnCount(4)
-        self.results.setHorizontalHeaderLabels(["Artist", "Album", "File", "Matched"])
-        self.results.setRowCount(len(hits))
-        for r, (tid, (artist, adir, fname), shown) in enumerate(hits):
-            self.results.setItem(r, 0, QTableWidgetItem(artist))
-            self.results.setItem(r, 1, QTableWidgetItem(self.owner.album_display(adir)))
-            self.results.setItem(r, 2, QTableWidgetItem(fname))
-            self.results.setItem(r, 3, QTableWidgetItem(shown))
+        self.results.setSortingEnabled(False)
+        if self._by_album:
+            albums = self._album_rows()
+            self._rows = [("album", adir) for adir, _a in albums]
+            self.count_lbl.setText("%d albums, %d tracks%s" % (
+                len(albums), len(self._hits), " (capped at 2000)" if capped else ""))
+            self.results.setColumnCount(4)
+            self.results.setHorizontalHeaderLabels(
+                ["Artist", "Album", "Matching tracks", "Matched"])
+            self.results.setRowCount(len(albums))
+            for r, (adir, a) in enumerate(albums):
+                self.results.setItem(r, 0, QTableWidgetItem(a["artist"]))
+                self.results.setItem(
+                    r, 1, QTableWidgetItem(self.owner.album_display(adir)))
+                n = QTableWidgetItem(str(len(a["tids"])))
+                n.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                self.results.setItem(r, 2, n)
+                # the album's tracks can each have matched on a different value
+                # (16 different comments): show the first few, count the rest
+                shown = a["shown"]
+                txt = "; ".join(shown[:3])
+                if len(shown) > 3:
+                    txt += "; … (%d more)" % (len(shown) - 3)
+                it = QTableWidgetItem(txt)
+                it.setToolTip("\n".join(shown))
+                self.results.setItem(r, 3, it)
+        else:
+            self._rows = [("track", tid) for tid, _m, _s in self._hits]
+            self.count_lbl.setText("%d matches%s" % (
+                len(self._hits), " (capped at 2000)" if capped else ""))
+            self.results.setColumnCount(4)
+            self.results.setHorizontalHeaderLabels(
+                ["Artist", "Album", "File", "Matched"])
+            self.results.setRowCount(len(self._hits))
+            for r, (tid, (artist, adir, fname), shown) in enumerate(self._hits):
+                self.results.setItem(r, 0, QTableWidgetItem(artist))
+                self.results.setItem(
+                    r, 1, QTableWidgetItem(self.owner.album_display(adir)))
+                self.results.setItem(r, 2, QTableWidgetItem(fname))
+                it = QTableWidgetItem(shown)
+                it.setToolTip(shown)
+                self.results.setItem(r, 3, it)
         self.results.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
         self.results.resizeColumnsToContents()
 
+    def restore_state(self):
+        """Coming back from the library: put the cursor back on the result the
+        user opened last, so a long result list can be worked through row by row."""
+        self.refresh_fields()
+        if 0 <= self._last_row < self.results.rowCount():
+            self.results.selectRow(self._last_row)
+            self.results.scrollToItem(self.results.item(self._last_row, 0))
+
     def _open(self, item):
         r = item.row()
-        if 0 <= r < len(self._rows):
-            self.owner.open_track_from_search(self._rows[r][0])
+        if not (0 <= r < len(self._rows)):
+            return
+        self._last_row = r
+        kind, key = self._rows[r]
+        if kind == "album":
+            self.owner.open_album_from_search(key)
+        else:
+            self.owner.open_track_from_search(key)
 
 
 class CoverSearchDialog(QDialog):

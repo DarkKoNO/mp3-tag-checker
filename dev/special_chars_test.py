@@ -105,21 +105,25 @@ tid3 = w.con.execute("SELECT id FROM tracks WHERE filename=?",
 snap = db.latest_snapshot(w.con, tid3)
 check("slash-title round-trips exactly",
       snap["tags"]["title"] == [TRACKS[2][1]], str(snap["tags"]["title"]))
+# a custom TXXX tag is a field of its own now: snapshotted under its frame key,
+# so it can be searched and edited like any other tag
 check("giant TXXX fingerprint stored",
-      snap["tags"].get("_txxx", {}).get("Acoustid Fingerprint") == [FINGERPRINT])
+      snap["tags"].get("x:TXXX:Acoustid Fingerprint") == [FINGERPRINT])
 
-# ------------------------------------- 2) track view: bounded header width --
+# ------------------------------------- 2) track view: bounded table width --
 w.detail.show_track(tid3)
-txxx_lbls = [l for l in w.detail.findChildren(QLabel)
-             if "Custom tags (TXXX)" in l.text()]
-check("TXXX header label exists", len(txxx_lbls) == 1)
-if txxx_lbls:
-    lbl = txxx_lbls[0]
-    check("TXXX values are shortened", "…" in lbl.text())
-    check("TXXX label cannot inflate the window",
-          lbl.sizeHint().width() < 1500, str(lbl.sizeHint().width()))
-    check("TXXX text is HTML-escaped (escape survives)",
-          "&lt;" not in lbl.text() or True)   # informational only
+rows = {w.detail.track_table.item(r, 0).text(): r
+        for r in range(w.detail.track_table.rowCount())
+        if w.detail.track_table.item(r, 0) is not None}
+check("TXXX tag has an editable row", "Custom [Acoustid Fingerprint]" in rows,
+      str(list(rows))[:200])
+if "Custom [Acoustid Fingerprint]" in rows:
+    r = rows["Custom [Acoustid Fingerprint]"]
+    check("TXXX row holds the full value",
+          w.detail.track_table.item(r, 1).text() == FINGERPRINT)
+    check("the giant value cannot inflate the window",
+          w.detail.track_table.columnWidth(1) <= 520,
+          str(w.detail.track_table.columnWidth(1)))
 
 # title with <christmas-tree> chars must land in the table verbatim
 titles = [w.detail.track_table.item(r, 1).text()

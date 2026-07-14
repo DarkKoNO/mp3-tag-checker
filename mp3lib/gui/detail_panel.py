@@ -835,6 +835,10 @@ class DetailPanel(QWidget):
                 (adir, field)).fetchone()
             if has_val or has_prop:
                 album_fields.append(field)
+        # dynamic tags any track of the album carries (named comments, custom
+        # TXXX, lyrics): editable album-wide, exactly like the known fields
+        album_fields += sorted({f for tid in snaps for f in snaps[tid]
+                                if tagio.is_extra(f)})
         # album-level fields: table look (bold field name, read-only current),
         # but the Proposed column is a real input box — NOTHING is stored
         # until Enter is pressed or the row's Add button is clicked, so
@@ -874,9 +878,12 @@ class DetailPanel(QWidget):
             it0 = QTableWidgetItem(field_label(field))
             it0.setFont(bold)
             it0.setFlags(it0.flags() & ~Qt.ItemIsEditable)
-            it0.setToolTip("Technical tag name: %s" % field)
+            it0.setToolTip("Technical tag name: %s" % (
+                field[len(tagio.EXTRA_PREFIX):] if tagio.is_extra(field)
+                else tagio.FIELD_FRAMES.get(field, field)))
             it1 = QTableWidgetItem(cur or "—")
             it1.setFlags(it1.flags() & ~Qt.ItemIsEditable)
+            it1.setToolTip(cur)
             table.setItem(r, 0, it0)
             table.setItem(r, 1, it1)
             edit = QLineEdit(proposed)
@@ -929,6 +936,10 @@ class DetailPanel(QWidget):
                 edit.setText(pend)
                 self._album_edit_changed(field, edit, add_btn, proposed)
         table.resizeColumnsToContents()
+        # cap: a dynamic tag's value can be one huge unbreakable token
+        # (AcoustID fingerprint) — elide it rather than stretch the window
+        for c in (0, 1):
+            table.setColumnWidth(c, min(table.columnWidth(c), 520))
         table.setColumnWidth(2, max(260, table.columnWidth(2)))
         table.setColumnWidth(3, 60)
         table.setColumnWidth(4, 64)
@@ -1493,24 +1504,6 @@ class DetailPanel(QWidget):
             (tags.get("_bitrate") or 0) // 1000,
             ", ".join("%s×%s" % (c["w"], c["h"]) for c in tags.get("_cover", [])) or "no cover")
         self.lay.addWidget(sel_label("<i>%s</i>" % meta))
-        txxx = tags.get("_txxx") or {}
-        if txxx:
-            # values are shown shortened: things like AcoustID fingerprints
-            # are thousands of characters in ONE unbreakable token, which
-            # word-wrap cannot break — the label would force the whole
-            # window to grow to the token's width
-            def short(s, n=100):
-                return s if len(s) <= n else s[:n] + "…"
-            txt = ", ".join(
-                "%s = %s" % (k, short("; ".join(v)))
-                for k, v in sorted(txxx.items()))
-            lbl = sel_label("<i>Custom tags (TXXX): %s</i>" % html.escape(txt))
-            lbl.setWordWrap(True)
-            lbl.setToolTip("Extra tags written by other software (MusicBrainz"
-                           " Picard etc.). Long values are shortened here;"
-                           " the files are not modified.")
-            self.lay.addWidget(lbl)
-
         issues = [(sev, msg) for sev, msg, rule in self.con.execute(
             "SELECT severity, message, rule FROM issues WHERE track_id=?",
             (track_id,))
@@ -1524,6 +1517,10 @@ class DetailPanel(QWidget):
         fields = [f for f in tagio.EDITABLE_FIELDS
                   if f in tagio.PRIMARY_FIELDS or tags.get(f) or f in props
                   or show_all]
+        # every other tag the file carries (named comments, custom TXXX,
+        # lyrics, …) is a field like any other — listed after the known ones
+        fields += sorted(f for f in set(tags) | set(props)
+                         if tagio.is_extra(f))
         self._track_fields = fields
         self.track_table = QTableWidget(len(fields), 4)
         self.track_table.setHorizontalHeaderLabels(
@@ -1535,8 +1532,12 @@ class DetailPanel(QWidget):
         for r, field in enumerate(fields):
             it0 = QTableWidgetItem(field_label(field))
             it0.setFlags(it0.flags() & ~Qt.ItemIsEditable)
+            it0.setToolTip("Technical tag name: %s" % (
+                field[len(tagio.EXTRA_PREFIX):] if tagio.is_extra(field)
+                else tagio.FIELD_FRAMES.get(field, field)))
             it1 = QTableWidgetItem(join_vals(tags.get(field, []), self.sep()))
             it1.setFlags(it1.flags() & ~Qt.ItemIsEditable)
+            it1.setToolTip(it1.text())
             p = props.get(field)
             proposed_txt = join_vals(p["proposed"], self.sep()) if p else ""
             if p and not p["proposed"]:
@@ -1564,6 +1565,12 @@ class DetailPanel(QWidget):
             self.track_table.setCellWidget(r, 3, clear_btn)
         self.track_table.itemChanged.connect(self._track_edited)
         self.track_table.resizeColumnsToContents()
+        # a value can be one huge unbreakable token (AcoustID fingerprints run
+        # to thousands of characters) — cap the width so the cell elides it
+        # instead of stretching the window
+        for c in (0, 1, 2):
+            self.track_table.setColumnWidth(
+                c, min(self.track_table.columnWidth(c), 520))
         self.track_table.setColumnWidth(2, max(240, self.track_table.columnWidth(2)))
         self.track_table.setColumnWidth(3, 64)
         enable_copy(self.track_table)

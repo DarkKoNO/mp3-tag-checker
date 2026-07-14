@@ -197,6 +197,21 @@ def snapshot_at_batch(con, track_id, batch_id):
             "reason": row[3], "tags": json.loads(row[4])}
 
 
+def extra_fields(con):
+    """Every dynamic tag key (named comments, TXXX, lyrics — see tagio) present
+    in the library's current state, sorted. Used to offer them for search."""
+    from .tagio import EXTRA_PREFIX
+    keys = set()
+    # only snapshots that actually mention one are parsed
+    for (tags_json,) in con.execute(
+            "SELECT tags FROM snapshots WHERE id IN"
+            " (SELECT MAX(id) FROM snapshots GROUP BY track_id)"
+            " AND tags LIKE ?", ('%"' + EXTRA_PREFIX + '%',)):
+        keys.update(k for k in json.loads(tags_json)
+                    if k.startswith(EXTRA_PREFIX))
+    return sorted(keys)
+
+
 def log_change(con, track_id, path, field, old, new, origin):
     con.execute(
         "INSERT INTO changelog(ts, track_id, path, field, old, new, origin)"

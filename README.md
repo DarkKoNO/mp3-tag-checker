@@ -44,6 +44,9 @@ Jakub Konopásek.
   a time.
 - **Searches metadata** with multiple conditions combined, including
   regular expressions — and lets you save search expressions for reuse.
+  Every tag counts, including named comments, custom (TXXX) tags and lyrics.
+  Results can be grouped by album, and double-clicking one opens and selects
+  it in the library, ready to edit.
 - **Keeps history**: every write creates a tag snapshot and a changelog
   entry; any file can be reverted to any earlier state.
 - **Scan log**: after every scan a copyable log lists problems (unreadable

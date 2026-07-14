@@ -117,6 +117,26 @@ are themselves logged writes — so they too can be undone.
 ## 7. Search and Change log pages
 
 - **Search** finds tracks by any field, with saved search expressions.
+  - Every tag a file carries can be searched, not just the standard ones:
+    named comments (`Comment [MusicMatch_Situation]`,
+    `Comment [Songs-DB_Occasion]`, …), custom tags (`Custom [BARCODE]`) and
+    `Lyrics` appear in the field picker under the frame they live in, and
+    are matched by **(any field)** too. They are editable in the track and
+    album views like any other field.
+  - The **Matched** column says why each row is a hit: `field: value` for
+    every field a condition actually matched on. With **(any field)** that
+    is how you see *which* tag held the value. A condition that did not
+    match is never listed; an `is empty` condition shows `(empty)`. Long
+    values are shortened — hover the cell for the full text.
+  - **Group by album** collapses the hits into one row per album — the list
+    to work through when you want to fix whole albums rather than single
+    tracks. Its Matched column lists the distinct values the album's tracks
+    matched on (the first few, the rest in the tooltip).
+  - Double-clicking a result opens it in the library: the artist and album
+    are expanded and the track (or the album, when grouped) is **selected**
+    in the catalog on the left, so the right panel shows it and you can edit
+    and apply straight away. Going back to **Search** keeps your conditions,
+    the results and the row you last opened.
 - **Change log** lists every field ever written by the app: when, which
   file, which field, old value → new value, and why.
 

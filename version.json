@@ -1,6 +1,17 @@
 {
-  "version": "1.6.1",
+  "version": "1.7.0",
   "changelog": [
+    {
+      "version": "1.7.0",
+      "date": "2026-07-14",
+      "changes": [
+        "Every tag in a file is now read, searchable and editable — not just the standard fields. Named comment frames (COMM:MusicMatch_Situation, COMM:Songs-DB_Occasion and the like), custom TXXX tags and embedded lyrics were previously invisible: they were never stored, so they could not be found in Search and could not be edited. They now appear as fields of their own — 'Comment [MusicMatch_Situation]', 'Custom [BARCODE]', 'Lyrics' — in the track and album views and in the Search field picker, and are matched by '(any field)' too. Editing one writes back into exactly that frame and leaves the other tags alone. Do a full re-read (Rescan, or 'Re-read all files') to pick these up on files that have not otherwise changed.",
+        "Search results can be grouped by album: tick 'Group by album' to collapse the matching tracks into one row per album, with the number of matching tracks — the list to work through when you want to fix whole albums rather than single tracks.",
+        "Double-clicking a search result now really opens it in the library: the artist and album are expanded and the track — or the whole album, in grouped mode — is selected in the catalog on the LEFT, so both sides of the window agree and the album can be edited and applied straight away. Previously only the right-hand panel changed while the tree kept its old selection. A hit hidden by the severity filter is revealed by widening the filter instead of being lost.",
+        "Coming back to Search keeps your conditions, your results and the row you last opened, so a long result list can be worked through album by album.",
+        "The 'Matched' column of the search results now actually says what was found: 'field: value' for every field a condition hit on. Previously it stayed empty for '(any field)' searches (the commonest kind) — it only ever filled itself when a condition named a field explicitly — and when it did show something, it listed the field even if that condition had NOT matched. Now an '(any field)' hit names the field the value was found in, a condition that failed inside an OR group is no longer reported as a match, and an 'is empty' search shows the field as '(empty)'. Long values (lyrics, fingerprints) are shortened, with the full text in the cell's tooltip."
+      ]
+    },
     {
       "version": "1.6.1",
       "date": "2026-07-13",

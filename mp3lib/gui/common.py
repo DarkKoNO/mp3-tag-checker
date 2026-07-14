@@ -34,6 +34,11 @@ def field_label(field):
     """How a metadata field is displayed everywhere in the GUI."""
     if not field:
         return ""
+    from .. import tagio
+    if tagio.is_extra(field):
+        # dynamic tag (named comment, custom TXXX, lyrics, …): named after the
+        # frame it lives in, so it cannot collide with a user alias
+        return tagio.extra_label(field)
     return FIELD_LABELS.get(field) or FIELD_UI.get(field, field)
 
 
