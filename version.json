@@ -1,6 +1,13 @@
 {
-  "version": "1.7.0",
+  "version": "1.7.1",
   "changelog": [
+    {
+      "version": "1.7.1",
+      "date": "2026-07-14",
+      "changes": [
+        "Multi-line tag values (lyrics above all) are readable again in the track and album views. A table cell paints every line of its text but is only one line high, so a value with real line breaks came out with its lines drawn on top of each other. Such a value is now shown on ONE line with a visible ⏎ for each break — the file itself is not touched, the cell's tooltip shows the real multi-line text, and copying (Ctrl+C or the copy icon) still hands out the original with its line breaks intact."
+      ]
+    },
     {
       "version": "1.7.0",
       "date": "2026-07-14",

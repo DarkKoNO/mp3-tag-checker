@@ -308,6 +308,53 @@ check("the album with no extras does not grow the fields",
        for r in range(w.detail.album_table.rowCount())]
       if w.detail.show_album(adir80) is None else True)
 
+# ------------------------------- 8) multi-line values (lyrics) stay readable --
+# a cell paints every line of its text but is only one line high, so a raw
+# multi-line value came out with its lines drawn on top of each other
+from mp3lib.gui.common import RAW_ROLE, flat, unflat
+LYR = "Branky body vteriny\r\n\r\nja se divam"
+w.con.execute("DELETE FROM proposals")
+w.con.commit()
+tracks_l = w.con.execute("SELECT id, path FROM tracks WHERE album_dir=?"
+                         " ORDER BY filename", (adir81,)).fetchall()
+tid_l, path_l = tracks_l[2]
+for _tid, _p in tracks_l:       # all of them, so the album cell is not «varies»
+    tagio.write_changes(_p, {"x:USLT::eng": [LYR]}, cfg["settings"])
+scanner.scan(w.con, cfg["settings"], root, [ARTIST], full=True)
+w.refresh_tree()
+
+w.detail.show_track(tid_l)
+rows = {w.detail.track_table.item(r, 0).text(): r
+        for r in range(w.detail.track_table.rowCount())
+        if w.detail.track_table.item(r, 0) is not None}
+r = rows["Lyrics"]
+cell = w.detail.track_table.item(r, 1)
+check("no line break is left in the displayed cell",
+      "\n" not in cell.text() and "\r" not in cell.text(), repr(cell.text()))
+check("the breaks are shown as ⏎", "⏎" in cell.text(), repr(cell.text()))
+check("every line is still readable in the cell",
+      "Branky body vteriny" in cell.text() and "ja se divam" in cell.text(),
+      repr(cell.text()))
+check("the real multi-line text is kept for copy/tooltip",
+      cell.data(RAW_ROLE) == LYR and cell.toolTip() == LYR)
+check("the file itself still holds the real line breaks",
+      tagio.read_tags(path_l)["x:USLT::eng"] == [LYR])
+check("the display form round-trips back to line breaks",
+      unflat(flat(LYR)) == "Branky body vteriny\nja se divam",
+      repr(unflat(flat(LYR))))
+
+# the album view's read-only column has the same problem
+w.detail.show_album(adir81)
+alb = {w.detail.album_table.item(r, 0).text(): r
+       for r in range(w.detail.album_table.rowCount())
+       if w.detail.album_table.item(r, 0) is not None}
+cur = w.detail.album_table.item(alb["Lyrics"], 1)
+check("album view shows no raw line breaks either",
+      "\n" not in cur.text() and "\r" not in cur.text() and "⏎" in cur.text(),
+      repr(cur.text()))
+check("album view keeps the real text for copy/tooltip",
+      cur.data(RAW_ROLE) == LYR, repr(cur.data(RAW_ROLE)))
+
 print()
 if FAILS:
     print("FAILED: %d check(s): %s" % (len(FAILS), FAILS))

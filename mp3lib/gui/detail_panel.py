@@ -21,8 +21,9 @@ from .. import applier, db, tagio
 from ..rules import (IMAGE_RULES, RULE_SEVERITY, missing_field_of,
                      rule_description, rule_label)
 from .common import (SEV_COLORS, SEV_RANK, STATUS_COLORS, add_hover_copy,
-                     copy_button, enable_copy, field_label, join_vals,
-                     persist_header, persist_splitter, sel_label, split_vals)
+                     copy_button, enable_copy, field_label, flat, join_vals,
+                     persist_header, persist_splitter, sel_label, split_vals,
+                     unflat, value_item)
 from .dialogs import (ArtistImageDialog, CoverSearchDialog, ExceptionsDialog,
                       HistoryDialog, ImageViewerDialog)
 
@@ -871,6 +872,9 @@ class DetailPanel(QWidget):
                 (adir, field)).fetchall()
             pvals = {join_vals(json.loads(p[0]), self.sep()) for p in props}
             proposed = pvals.pop() if len(pvals) == 1 else ("«varies»" if pvals else "")
+            # the box is one line: a multi-line value (lyrics) is shown with ⏎
+            # for each break and turned back on the way in
+            proposed = flat(proposed)
             # a proposal exists but its new value is empty = the value is
             # set to be removed (Clear); the box stays empty so typing a
             # replacement needs no deleting first
@@ -881,9 +885,8 @@ class DetailPanel(QWidget):
             it0.setToolTip("Technical tag name: %s" % (
                 field[len(tagio.EXTRA_PREFIX):] if tagio.is_extra(field)
                 else tagio.FIELD_FRAMES.get(field, field)))
-            it1 = QTableWidgetItem(cur or "—")
+            it1 = value_item(cur) if cur else QTableWidgetItem("—")
             it1.setFlags(it1.flags() & ~Qt.ItemIsEditable)
-            it1.setToolTip(cur)
             table.setItem(r, 0, it0)
             table.setItem(r, 1, it1)
             edit = QLineEdit(proposed)
@@ -1107,7 +1110,7 @@ class DetailPanel(QWidget):
         for every track. Confirming the current value removes the proposal
         again (set_manual_proposal deletes no-change proposals); confirming
         an emptied box removes any open proposal for the field."""
-        text = self._album_edits[field].text().strip()
+        text = unflat(self._album_edits[field].text()).strip()
         if "«" in text:
             return
         if not text:
@@ -1535,14 +1538,16 @@ class DetailPanel(QWidget):
             it0.setToolTip("Technical tag name: %s" % (
                 field[len(tagio.EXTRA_PREFIX):] if tagio.is_extra(field)
                 else tagio.FIELD_FRAMES.get(field, field)))
-            it1 = QTableWidgetItem(join_vals(tags.get(field, []), self.sep()))
-            it1.setFlags(it1.flags() & ~Qt.ItemIsEditable)
-            it1.setToolTip(it1.text())
+            # lyrics and the like hold real line breaks: shown on one line with
+            # a ⏎ per break (a cell paints every line but is one line high, so
+            # the lines would be drawn on top of each other), the real text kept
+            # for the tooltip and for copying
+            it1 = value_item(join_vals(tags.get(field, []), self.sep()))
             p = props.get(field)
             proposed_txt = join_vals(p["proposed"], self.sep()) if p else ""
             if p and not p["proposed"]:
                 proposed_txt = CLEAR_MARKER   # empty new value = Clear
-            it2 = QTableWidgetItem(proposed_txt)
+            it2 = value_item(proposed_txt, editable=True)
             self.track_table.setItem(r, 0, it0)
             self.track_table.setItem(r, 1, it1)
             self.track_table.setItem(r, 2, it2)
@@ -1615,7 +1620,8 @@ class DetailPanel(QWidget):
         if item.column() != 2 or item.row() >= len(self._track_fields):
             return
         field = self._track_fields[item.row()]
-        text = item.text().strip()
+        # ⏎ markers the display uses for line breaks become real ones again
+        text = unflat(item.text()).strip()
         if text == CLEAR_MARKER:
             # the remove-value display text, unchanged: keep the proposal
             applier.set_manual_proposal(self.con, self._track_id, field, [])

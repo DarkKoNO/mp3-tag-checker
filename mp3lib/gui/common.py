@@ -84,6 +84,47 @@ def split_vals(text, sep="; "):
     return [p for p in parts if p]
 
 
+# A tag value can hold real line breaks (lyrics above all). A table cell paints
+# every line of its text but is only one line high, so the lines end up drawn on
+# top of each other. Values are therefore shown on ONE line with a visible ⏎ for
+# each break; the untouched original travels in RAW_ROLE so copying, and the
+# tooltip, still give back the real multi-line text.
+NL_MARK = " ⏎ "
+RAW_ROLE = Qt.UserRole + 20
+
+
+def flat(text):
+    """The one-line display form of a possibly multi-line value."""
+    if "\n" not in text and "\r" not in text:
+        return text
+    return NL_MARK.join(ln.strip() for ln in text.splitlines() if ln.strip())
+
+
+def unflat(text):
+    """Turn a display form the user edited back into real line breaks."""
+    return "\n".join(p.strip() for p in text.split(NL_MARK.strip()))
+
+
+def value_item(text, editable=False):
+    """A table cell for a tag value: one-line display, full text in the tooltip
+    and in RAW_ROLE (what Ctrl+C / the copy icon hand out)."""
+    from PySide6.QtWidgets import QTableWidgetItem
+    it = QTableWidgetItem(flat(text))
+    if not editable:
+        it.setFlags(it.flags() & ~Qt.ItemIsEditable)
+    if text:
+        it.setToolTip(text)
+        it.setData(RAW_ROLE, text)
+    return it
+
+
+def raw_text(item):
+    """What an item really holds — the multi-line original when there is one."""
+    if item is None:
+        return ""
+    return item.data(RAW_ROLE) or item.text()
+
+
 _save_timer = None
 _save_cfg = None
 
@@ -140,7 +181,8 @@ def enable_copy(view):
         if isinstance(view, QTableWidget):
             rows = {}
             for it in view.selectedItems():
-                rows.setdefault(it.row(), {})[it.column()] = it.text()
+                # a one-line ⏎ display must copy out as the real multi-line value
+                rows.setdefault(it.row(), {})[it.column()] = raw_text(it)
             for r in sorted(rows):
                 cols = rows[r]
                 lines.append("\t".join(cols.get(c, "")
@@ -188,7 +230,7 @@ def add_hover_copy(table, value_col):
             return
         it = table.item(btn._row, value_col)
         if it is not None:
-            QApplication.clipboard().setText(it.text())
+            QApplication.clipboard().setText(raw_text(it))
     btn.clicked.connect(do_copy)
 
     def show_for(row):
