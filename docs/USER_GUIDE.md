@@ -146,8 +146,23 @@ Nothing is ever contacted automatically. When you ask for it:
 
 - **Internet check…** searches **MusicBrainz** for the selected album and
   shows the differences against your tags — you decide what to take over.
-- Missing covers can be fetched from the **Cover Art Archive** and artist
-  images from **Deezer**, again only per your explicit request.
+- **Change cover…** (in the album view, or via the *Change cover…* button
+  when viewing the cover full-size) searches
+  **MusicBrainz / Cover Art Archive** — and
+  **Discogs**, when you enter a (free) personal access token in
+  **Settings → Checks** (discogs.com → Settings → Developers → *Generate new
+  token*). Each result shows the pixel resolution of its cover so you can
+  pick the largest one; choosing a result embeds the full-resolution
+  original, not the preview thumbnail. Two buttons confirm the choice:
+  **save as proposal** stores the cover to be written with the album's
+  other changes on the next Apply, while **apply now** embeds it into all
+  tracks (+ `folder.jpg`) immediately — applying *only* the cover and
+  leaving the album's other pending proposals untouched. Either way, a
+  cover you picked yourself always replaces an existing `folder.jpg`,
+  regardless of the *Overwrite existing folder.jpg* setting. Artist images
+  come from **Deezer** and **TheAudioDB** — again only per your explicit
+  request (they are saved as `artist.jpg` right away; nothing is embedded
+  into the files).
 
 ## 9. Settings
 
@@ -162,7 +177,8 @@ Highlights:
 - **Field patterns** — e.g. year must match `^\d{4}$`, with a list of
   allowed exceptions (`unknown`, `undated`, …).
 - **Covers** — minimum acceptable embedded cover size, whether to write
-  `folder.jpg` next to the files.
+  `folder.jpg` next to the files, and the optional **Discogs token** that
+  adds Discogs to the online cover search.
 - **Themes** — Light and Dark are built in; you can create your own themes
   (colors and fonts) in the theme editor.
 - **Field labels** — the names shown for tag fields; a Czech set ships with

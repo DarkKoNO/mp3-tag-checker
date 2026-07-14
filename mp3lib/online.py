@@ -54,6 +54,75 @@ def fetch_cover(release_id, size=500):
     return mime, r.content
 
 
+def caa_front_url(release_id):
+    """URL of the ORIGINAL (full resolution) front cover in Cover Art Archive."""
+    return "https://coverartarchive.org/release/%s/front" % release_id
+
+
+def fetch_cover_full(release_id):
+    """(mime, bytes) of the original full-resolution front cover, or None."""
+    r = requests.get(caa_front_url(release_id), headers=UA, timeout=60,
+                     allow_redirects=True)
+    if r.status_code == 404:
+        return None
+    r.raise_for_status()
+    mime = r.headers.get("Content-Type", "image/jpeg").split(";")[0]
+    return mime, r.content
+
+
+def probe_image_size(url):
+    """(width, height) of a remote image, downloading only enough of the file
+    to parse its header. None when there is no readable image at the URL."""
+    from io import BytesIO
+
+    from PIL import Image
+
+    r = requests.get(url, headers=UA, timeout=20, stream=True,
+                     allow_redirects=True)
+    try:
+        if r.status_code == 404:
+            return None
+        r.raise_for_status()
+        buf = b""
+        for chunk in r.iter_content(32768):
+            buf += chunk
+            try:
+                with Image.open(BytesIO(buf)) as im:
+                    return im.size
+            except Exception:
+                if len(buf) > 1_000_000:   # a JPEG header never needs this much
+                    return None
+        with Image.open(BytesIO(buf)) as im:   # small file: fully downloaded
+            return im.size
+    except Exception:
+        return None
+    finally:
+        r.close()
+
+
+def discogs_release_candidates(artist, album, token, limit=8):
+    """[{'label','url','year'}] release cover candidates from Discogs.
+    Needs a (free) personal access token — discogs.com > Settings >
+    Developers > 'Generate new token'."""
+    r = requests.get("https://api.discogs.com/database/search",
+                     params={"artist": artist, "release_title": album,
+                             "type": "release", "per_page": limit,
+                             "token": token},
+                     headers=UA, timeout=20)
+    r.raise_for_status()
+    out = []
+    for item in r.json().get("results", []):
+        url = item.get("cover_image") or ""
+        if not url or url.endswith(".gif"):   # spacer.gif = no image
+            continue
+        fmt = ", ".join(item.get("format") or [])
+        out.append({"label": "%s  (%s %s %s)" % (
+                        item.get("title", "?"), item.get("year", "?"),
+                        item.get("country", ""), fmt),
+                    "url": url})
+    return out
+
+
 def deezer_artist_candidates(name, limit=6):
     """[{'source','label','url'}] artist picture candidates from Deezer."""
     r = requests.get("https://api.deezer.com/search/artist",

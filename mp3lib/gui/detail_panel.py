@@ -983,7 +983,11 @@ class DetailPanel(QWidget):
 
                 def _open_cover(_ev, p=full, name=aname):
                     if not p.isNull():
-                        ImageViewerDialog(p, "Cover — %s" % name, self).exec()
+                        v = ImageViewerDialog(p, "Cover — %s" % name, self,
+                                              change_btn="Change cover…")
+                        v.exec()
+                        if v.change_requested:
+                            self._find_cover(adir, artist, snaps)
                 cover_lbl.mousePressEvent = _open_cover
             else:
                 cover_lbl.setText("no cover")
@@ -1072,9 +1076,10 @@ class DetailPanel(QWidget):
                             " revert to any of them")
         hist_btn.clicked.connect(lambda: self._history(adir))
         btns.addWidget(hist_btn)
-        cover_btn = QPushButton("Find cover online…")
-        cover_btn.setToolTip("Search MusicBrainz / Cover Art Archive (or pick"
-                             " a file from disk) for a better album cover")
+        cover_btn = QPushButton("Change cover…")
+        cover_btn.setToolTip("Pick a better album cover: search MusicBrainz /"
+                             " Cover Art Archive (and Discogs, with a token in"
+                             " Settings), or load a file from disk")
         cover_btn.clicked.connect(lambda: self._find_cover(adir, artist, snaps))
         btns.addWidget(cover_btn)
         btns.addStretch(1)
@@ -1472,7 +1477,8 @@ class DetailPanel(QWidget):
                 artist_name = tags["artist"][0]
             if album_name:
                 break
-        dlg = CoverSearchDialog(self.con, artist_name, album_name, adir, self)
+        dlg = CoverSearchDialog(self.con, self.cfg["settings"], artist_name,
+                                album_name, adir, self)
         dlg.exec()
         if dlg.chosen:
             self.refresh()

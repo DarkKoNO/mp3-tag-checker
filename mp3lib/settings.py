@@ -300,6 +300,9 @@ DEFAULT_SETTINGS = {
     "overwrite_folder_jpg": False,
     "embed_folder_jpg": True,     # embed folder image when a track has none, and
                                   # sync embedded<->folder to the larger resolution
+    # personal access token for the Discogs cover search (empty = Discogs off);
+    # discogs.com > Settings > Developers > 'Generate new token'
+    "discogs_token": "",
     # genre
     "genre_policy": "fill_missing",  # 'preserve' = never touch; 'fill_missing' = propose for empty
     # history

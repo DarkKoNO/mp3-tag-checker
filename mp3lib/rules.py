@@ -249,7 +249,7 @@ RULE_DESCRIPTIONS = {
         " cover embedded in the album's tracks into folder.jpg.",
     "cover":
         "Replaces the cover art embedded in all tracks of the album with the"
-        " picture chosen in 'Find cover online...' (and writes folder.jpg"
+        " picture chosen in 'Change cover...' (and writes folder.jpg"
         " when configured). The previous cover is remembered and can be"
         " restored via History.",
     "manual":
@@ -259,11 +259,11 @@ RULE_DESCRIPTIONS = {
         "The track has no embedded cover art, so players show a blank square."
         " When the album folder has a cover image (folder.jpg / cover.jpg / …)"
         " and 'Embed folder image' is on in Settings, the proposal embeds that"
-        " image; otherwise use 'Find cover online...' to pick one.",
+        " image; otherwise use 'Change cover...' to pick one.",
     "cover_tiny":
         "The embedded cover is smaller than the minimum size set in Settings"
-        " - Checks, so players upscale it and it looks blurry. Use 'Find"
-        " cover online...' in the album view to replace it with a larger"
+        " - Checks, so players upscale it and it looks blurry. Use 'Change"
+        " cover...' in the album view to replace it with a larger"
         " picture.",
     "cover_mismatch":
         "A track's embedded cover and the album's folder image are different"

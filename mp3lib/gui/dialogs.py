@@ -557,6 +557,14 @@ class SettingsPane(QWidget):
         chk(cform, "embed_folder_jpg",
             "Embed the folder image into tracks with no cover, and keep embedded"
             " cover / folder image at the higher resolution")
+        self.w["discogs_token"] = QLineEdit(s.get("discogs_token", ""))
+        self.w["discogs_token"].setToolTip(
+            "Personal access token from discogs.com → Settings → Developers →"
+            " 'Generate new token' (a free account is enough).\nWith a token,"
+            " 'Change cover…' also searches the Discogs database;"
+            " without one only MusicBrainz / Cover Art Archive is used.")
+        cform.addRow("Discogs token (extra cover source):",
+                     self.w["discogs_token"])
         chk(cform, "check_plus_collab",
             "Warn when the album folder name contains '+' (collaboration) but"
             " artist / album artist holds only one value")
@@ -2103,21 +2111,38 @@ class SearchPane(QWidget):
             self.owner.open_track_from_search(key)
 
 
-class CoverSearchDialog(QDialog):
-    """Search MusicBrainz + Cover Art Archive for a better album cover."""
+def _image_mime(data):
+    """'image/png' or 'image/jpeg' according to the actual image bytes."""
+    from io import BytesIO
 
-    def __init__(self, con, artist_name, album_name, album_dir, parent=None):
+    from PIL import Image
+    try:
+        with Image.open(BytesIO(data)) as im:
+            return "image/png" if (im.format or "").upper() == "PNG" \
+                else "image/jpeg"
+    except Exception:
+        return "image/jpeg"
+
+
+class CoverSearchDialog(QDialog):
+    """Search MusicBrainz + Cover Art Archive — and Discogs, when a token is
+    configured in Settings → Checks — for a better album cover."""
+
+    def __init__(self, con, settings, artist_name, album_name, album_dir,
+                 parent=None):
         super().__init__(parent)
-        self.con, self.album_dir = con, album_dir
+        self.con, self.settings, self.album_dir = con, settings, album_dir
         self.chosen = False
-        self.setWindowTitle("Find cover — %s / %s" % (artist_name, album_name))
-        self.resize(860, 520)
+        self.setWindowTitle("Change cover — %s / %s" % (artist_name, album_name))
+        self.resize(860, 540)
         lay = QVBoxLayout(self)
 
         row = QHBoxLayout()
         self.q_artist = QLineEdit(artist_name)
         self.q_album = QLineEdit(album_name)
-        search = QPushButton("Search MusicBrainz")
+        search = QPushButton("Search online")
+        search.setToolTip("MusicBrainz / Cover Art Archive + Discogs (Discogs"
+                          " needs a token in Settings → Checks)")
         search.clicked.connect(self._search)
         row.addWidget(QLabel("Artist:"))
         row.addWidget(self.q_artist)
@@ -2135,22 +2160,42 @@ class CoverSearchDialog(QDialog):
                               "or drag an image file here,\n"
                               "or use 'Load from disk…'")
         self.preview.setAlignment(Qt.AlignCenter)
-        self.preview.setMinimumSize(420, 380)
+        self.preview.setMinimumSize(420, 360)
         right.addWidget(self.preview)
+        self.res_lbl = QLabel("")   # resolution of the previewed image
+        self.res_lbl.setAlignment(Qt.AlignCenter)
+        right.addWidget(self.res_lbl)
         disk_btn = QPushButton("Load from disk…")
         disk_btn.clicked.connect(self._from_disk)
         right.addWidget(disk_btn)
-        self.use_btn = QPushButton("Use this cover (embed in all tracks + folder.jpg)")
+        self.use_btn = QPushButton("Use this cover — save as proposal")
+        self.use_btn.setToolTip(
+            "Store the cover as a proposal: it is embedded into all tracks"
+            " (+ folder.jpg) together with the album's other changes the next"
+            " time you Apply")
         self.use_btn.setEnabled(False)
-        self.use_btn.clicked.connect(self._use)
+        self.use_btn.clicked.connect(lambda: self._use(apply_now=False))
         right.addWidget(self.use_btn)
+        self.apply_btn = QPushButton("Use this cover — apply now")
+        self.apply_btn.setToolTip(
+            "Embed the cover into all tracks (+ folder.jpg) immediately."
+            " ONLY the cover is written — the album's other pending proposals"
+            " are left untouched for a normal Apply")
+        self.apply_btn.setEnabled(False)
+        self.apply_btn.clicked.connect(lambda: self._use(apply_now=True))
+        right.addWidget(self.apply_btn)
         mid.addLayout(right, 1)
         lay.addLayout(mid)
 
-        self.releases = []
-        self._cover_cache = {}
+        self.cands = []           # one dict per result row (kind mb/discogs)
+        self._img_cache = {}      # url -> (mime, data) or None
         self._current = None      # (mime, data, note) of the previewed image
+        self._current_cand = None  # the result it came from (None = local file)
         self.setAcceptDrops(True)
+
+    def _set_usable(self, on):
+        self.use_btn.setEnabled(on)
+        self.apply_btn.setEnabled(on)
 
     def dragEnterEvent(self, ev):
         if ev.mimeData().hasUrls():
@@ -2193,73 +2238,175 @@ class CoverSearchDialog(QDialog):
             QMessageBox.warning(self, "Cannot read image", Path(fp).name)
             return
         self._current = (mime, data, "local file: %s" % Path(fp).name)
+        self._current_cand = None
         self.preview.setPixmap(pm.scaled(420, 420, Qt.KeepAspectRatio,
                                          Qt.SmoothTransformation))
-        self.use_btn.setEnabled(True)
+        self.res_lbl.setText("%d×%d px" % (pm.width(), pm.height()))
+        self._set_usable(True)
 
     def _search(self):
         self.results.clear()
-        self.preview.setText("Searching…")
+        self.cands = []
+        self.res_lbl.setText("")
+        self._set_usable(False)
+        artist = self.q_artist.text().strip()
+        album = self.q_album.text().strip()
+        self.preview.setText("Searching MusicBrainz…")
         self.preview.repaint()
         try:
-            self.releases = online.search_releases(
-                self.q_artist.text().strip(), self.q_album.text().strip())
+            rels = online.search_releases(artist, album)
         except Exception as e:
-            QMessageBox.warning(self, "Search failed", str(e))
+            QMessageBox.warning(self, "MusicBrainz search failed", str(e))
+            rels = []
+        for rel in rels:
+            self.cands.append({
+                "kind": "mb", "id": rel["id"],
+                "url": online.caa_front_url(rel["id"]),
+                "text": "MB: %s — %s  (%s %s %s)  score %s" % (
+                    rel["artist"], rel["title"], rel["date"], rel["country"],
+                    rel["format"], rel["score"]),
+                "note": "%s — %s (%s)" % (rel["artist"], rel["title"],
+                                          rel["date"]),
+            })
+        token = (self.settings.get("discogs_token") or "").strip()
+        if token:
+            self.preview.setText("Searching Discogs…")
+            self.preview.repaint()
+            try:
+                for c in online.discogs_release_candidates(artist, album, token):
+                    self.cands.append({
+                        "kind": "discogs", "url": c["url"],
+                        "text": "Discogs: %s" % c["label"],
+                        "note": "Discogs: %s" % c["label"],
+                    })
+            except Exception as e:
+                QMessageBox.warning(self, "Discogs search failed", str(e))
+        for c in self.cands:
+            self.results.addItem(c["text"])
+        hint = "" if token else ("\n\n(A free Discogs token in Settings →"
+                                 " Checks\nadds Discogs as a second source.)")
+        if not self.cands:
+            self.preview.setText("No releases found." + hint)
             return
-        if not self.releases:
-            self.preview.setText("No releases found.")
-        for rel in self.releases:
-            self.results.addItem("%s — %s  (%s %s %s)  score %s" % (
-                rel["artist"], rel["title"], rel["date"], rel["country"],
-                rel["format"], rel["score"]))
+        self.preview.setText("Select a release to preview its cover." + hint)
+        self._probe_resolutions()
+
+    def _probe_resolutions(self):
+        """Append 'W×H px' to every result (header-only downloads, so even the
+        full-size originals are cheap to measure)."""
+        cands = self.cands
+        for i, c in enumerate(cands):
+            item = self.results.item(i)
+            if item is None or "size" in c:
+                continue
+            item.setText("%s  — checking resolution…" % c["text"])
+            QApplication.processEvents()
+            # closed or re-searched while probing: this result list is gone
+            if not self.isVisible() or self.cands is not cands:
+                return
+            c["size"] = online.probe_image_size(c["url"])
+            item.setText("%s  — %s" % (
+                c["text"],
+                "%d×%d px" % c["size"] if c["size"] else "no cover"))
 
     def _preview(self, row):
-        self.use_btn.setEnabled(False)
-        if row < 0 or row >= len(self.releases):
+        self._set_usable(False)
+        if row < 0 or row >= len(self.cands):
             return
-        rid = self.releases[row]["id"]
-        if rid not in self._cover_cache:
+        c = self.cands[row]
+        self.res_lbl.setText("")
+        if c.get("size", True) is None:   # probed and found nothing
+            self.preview.setText("No cover available for this release.")
+            return
+        if c["url"] not in self._img_cache:
             self.preview.setText("Loading cover…")
             self.preview.repaint()
             try:
-                self._cover_cache[rid] = online.fetch_cover(rid, size=500)
+                if c["kind"] == "mb":
+                    # 500px thumbnail for a fast preview; 'Use' fetches the
+                    # full-resolution original
+                    self._img_cache[c["url"]] = online.fetch_cover(
+                        c["id"], size=500)
+                else:
+                    data = online.fetch_image(c["url"])
+                    self._img_cache[c["url"]] = \
+                        (_image_mime(data), data) if data else None
             except Exception as e:
-                self._cover_cache[rid] = None
+                self._img_cache[c["url"]] = None
                 self.preview.setText("Error: %s" % e)
                 return
-        got = self._cover_cache[rid]
+        got = self._img_cache[c["url"]]
         if got is None:
-            self.preview.setText("No cover in Cover Art Archive for this release.")
+            self.preview.setText("No cover available for this release.")
             return
-        rel = self.releases[row]
-        self._current = (got[0], got[1], "%s — %s (%s)"
-                         % (rel["artist"], rel["title"], rel["date"]))
+        self._current = (got[0], got[1], c["note"])
+        self._current_cand = c
         pm = QPixmap()
         pm.loadFromData(got[1])
         self.preview.setPixmap(pm.scaled(420, 420, Qt.KeepAspectRatio,
                                          Qt.SmoothTransformation))
-        self.use_btn.setEnabled(True)
+        size = c.get("size")
+        if c["kind"] == "mb" and size:
+            self.res_lbl.setText(
+                "%d×%d px — 'Use' embeds this full resolution" % size)
+        else:
+            self.res_lbl.setText("%d×%d px" % (size or (pm.width(),
+                                                        pm.height())))
+        self._set_usable(True)
 
-    def _use(self):
+    def _use(self, apply_now=False):
         if not self._current:
             return
         mime, data, note = self._current
+        c = self._current_cand
+        if c is not None and c["kind"] == "mb":
+            # the preview is only a 500px thumbnail: embed the original
+            self._set_usable(False)
+            self.res_lbl.setText("Downloading the full-resolution cover…")
+            self.res_lbl.repaint()
+            try:
+                full = online.fetch_cover_full(c["id"])
+                if full:
+                    mime, data = full
+            except Exception:
+                pass   # keep the 500px preview data rather than fail
         cid = self.con.execute(
             "INSERT INTO pending_covers(album_dir, mime, data, note) VALUES (?,?,?,?)",
             (self.album_dir, mime, data, note)).lastrowid
         row_t = self.con.execute(
             "SELECT artist_folder FROM tracks WHERE album_dir=? LIMIT 1",
             (self.album_dir,)).fetchone()
-        db.upsert_proposal(self.con, None, row_t[0] if row_t else "", self.album_dir,
-                           "cover", ["current embedded art"],
-                           ["pending_cover:%d" % cid], "online", rule="cover")
+        pid = db.upsert_proposal(self.con, None, row_t[0] if row_t else "",
+                                 self.album_dir, "cover",
+                                 ["current embedded art"],
+                                 ["pending_cover:%d" % cid], "online",
+                                 rule="cover")
+        # picking a cover is an explicit choice: it must be applicable even
+        # when an earlier cover proposal for the album had been postponed
+        self.con.execute("UPDATE proposals SET status='pending' WHERE id=?",
+                         (pid,))
         self.con.commit()
         self.chosen = True
-        QMessageBox.information(
-            self, "Cover proposed",
-            "The cover was stored as a proposal. It will be embedded into all"
-            " tracks of the album when you apply.")
+        if apply_now:
+            from .. import applier
+            self.res_lbl.setText("Writing the cover into the files…")
+            self.res_lbl.repaint()
+            res = applier.apply_proposals(self.con, self.settings,
+                                          prop_ids=[pid])
+            if res["errors"]:
+                QMessageBox.warning(
+                    self, "Cover applied with errors",
+                    "\n".join("%s: %s" % e for e in res["errors"][:10]))
+            else:
+                QMessageBox.information(
+                    self, "Cover applied",
+                    "The cover was embedded into %d file(s). The album's other"
+                    " pending changes were not touched." % res["files"])
+        else:
+            QMessageBox.information(
+                self, "Cover proposed",
+                "The cover was stored as a proposal. It will be embedded into"
+                " all tracks of the album when you apply.")
         self.accept()
 
 
@@ -2406,15 +2553,18 @@ class ArtistImageDialog(QDialog):
 class ImageViewerDialog(QDialog):
     """A floating full-resolution image viewer: fit-to-window on open (never
     overflowing the screen), zoom with the mouse wheel or +/- buttons, the pixel
-    resolution and current zoom shown at the bottom, and a Close button."""
+    resolution and current zoom shown at the bottom, and a Close button.
+    change_btn adds a button of that label which closes the viewer with
+    ``change_requested`` set — the caller then opens its change dialog."""
 
-    def __init__(self, pixmap, title="Image", parent=None):
+    def __init__(self, pixmap, title="Image", parent=None, change_btn=None):
         super().__init__(parent)
         from PySide6.QtCore import QTimer
         self.setWindowTitle(title)
         self.orig = pixmap
         self.scale = 1.0
         self._pan_last = None
+        self.change_requested = False
         lay = QVBoxLayout(self)
         self.scroll = QScrollArea()
         self.scroll.setAlignment(Qt.AlignCenter)
@@ -2441,6 +2591,12 @@ class ImageViewerDialog(QDialog):
             b.setFixedWidth(44 if text != "Fit" else 56)
             b.clicked.connect(fn)
             bar.addWidget(b)
+        if change_btn:
+            ch_b = QPushButton(change_btn)
+            ch_b.setToolTip("Pick a different image: search online or load"
+                            " one from disk")
+            ch_b.clicked.connect(self._request_change)
+            bar.addWidget(ch_b)
         close_b = QPushButton("Close")
         close_b.clicked.connect(self.accept)
         bar.addWidget(close_b)
@@ -2450,6 +2606,10 @@ class ImageViewerDialog(QDialog):
         self.resize(min(self.orig.width() + 60, int(avail.width() * 0.9)),
                     min(self.orig.height() + 96, int(avail.height() * 0.9)))
         QTimer.singleShot(0, self._fit)     # viewport size known after layout
+
+    def _request_change(self):
+        self.change_requested = True
+        self.accept()
 
     def _fit(self):
         vp = self.scroll.viewport().size()

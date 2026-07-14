@@ -1,6 +1,20 @@
 {
-  "version": "1.7.2",
+  "version": "1.8.0",
   "changelog": [
+    {
+      "version": "1.8.0",
+      "date": "2026-07-14",
+      "changes": [
+        "The online cover search now shows the pixel resolution of every result: after searching, each release in the list gets its cover's real size appended ('1500×1500 px') — or 'no cover' when the release has no image at all — so you can pick the largest one instead of guessing. Only the image headers are downloaded for this, so it stays fast.",
+        "Choosing a cover now embeds the FULL-RESOLUTION original from the Cover Art Archive. Previously the 500px preview thumbnail was what ended up in the tracks and folder.jpg, whatever the real size of the artwork; the preview is still the small thumbnail (fast), but 'Use this cover' downloads the original.",
+        "Discogs is available as a second cover source: enter a personal access token in Settings → Checks (free Discogs account → Settings → Developers → 'Generate new token') and 'Change cover…' lists Discogs results — with their resolutions — alongside MusicBrainz. Without a token the search works as before; Discogs only returns its images to authenticated requests, which is why the token is needed.",
+        "The cover preview shows the resolution of the previewed image underneath, including for images loaded from disk or dragged in.",
+        "The cover search now has TWO confirm buttons instead of one. 'Use this cover — save as proposal' is the old behavior: the cover is stored as a proposal and written together with the album's other changes on the next Apply. 'Use this cover — apply now' embeds the cover into all tracks (+ folder.jpg) immediately — and applies ONLY the cover: every other pending proposal of the album stays untouched, waiting for a normal Apply.",
+        "Applying a cover chosen in the search dialog now REPLACES an existing folder.jpg. Previously it obeyed the 'Overwrite existing folder.jpg' setting (off by default), so the new image went only into the MP3s while the old smaller folder.jpg survived — which immediately raised a 'folder image is smaller than the embedded cover' problem and needed a second apply to resolve. A cover you picked yourself is meant for both places, so folder.jpg is now written in the same apply.",
+        "Fixed 'folder image is smaller than the embedded cover' surviving the very apply that fixed it. Writing folder.jpg (from a chosen cover or from the embedded art) now refreshes the album's recorded folder-image size and re-checks the album's rules immediately, so the problem disappears right after applying instead of lingering until the next rescan.",
+        "The full-size cover viewer (click the cover thumbnail in the album view) has a new 'Change cover…' button next to −/+/Fit/Close: it closes the viewer and opens the cover search straight away. The album view's 'Find cover online…' button is renamed to 'Change cover…' to match — it always did more than searching online (load from disk, drag & drop)."
+      ]
+    },
     {
       "version": "1.7.2",
       "date": "2026-07-14",

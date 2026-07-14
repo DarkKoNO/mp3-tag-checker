@@ -193,8 +193,12 @@ def apply_proposals(con, settings, artist_folders=None, album_dirs=None,
         if progress and (i % 20 == 0 or i == total - 1):
             progress(i + 1, total, path)
 
-    # album-level: folder.jpg + finish cover proposals
+    # album-level: folder.jpg + finish cover proposals. Always re-evaluate
+    # these albums — a folder.jpg write changes what the image rules see, and
+    # without the re-evaluation a 'folder image is smaller' issue would
+    # outlive the apply that just fixed it (until the next rescan).
     for adir, plist in album_level.items():
+        affected_albums.add(adir)
         for p in plist:
             if p["field"] == "folder_jpg":
                 # a 'replace…' proposal overwrites an existing (smaller) folder
@@ -206,6 +210,7 @@ def apply_proposals(con, settings, artist_folders=None, album_dirs=None,
                                           overwrite=True if force else None):
                         db.log_change(con, None, adir, "folder_jpg",
                                       [], ["written from embedded cover"], p["source"])
+                        _record_folder_image(con, adir)
                     con.execute("UPDATE proposals SET status='applied' WHERE id=?",
                                 (p["id"],))
                     con.execute("UPDATE albums SET folder_jpg=1 WHERE album_dir=?",
@@ -218,10 +223,18 @@ def apply_proposals(con, settings, artist_folders=None, album_dirs=None,
                     con.execute("UPDATE proposals SET status='applied' WHERE id=?",
                                 (p["id"],))
                     if settings["write_folder_jpg"]:
-                        _write_folder_jpg_bytes(adir, data,
-                                                settings["overwrite_folder_jpg"])
-                        con.execute("UPDATE albums SET folder_jpg=1 WHERE album_dir=?",
-                                    (adir,))
+                        # an explicitly chosen cover replaces folder.jpg right
+                        # away, regardless of the overwrite_folder_jpg setting —
+                        # otherwise the old (smaller) folder image survives and
+                        # immediately spawns a 'folder image is smaller' issue
+                        try:
+                            _write_folder_jpg_bytes(adir, data, overwrite=True)
+                            db.log_change(con, None, adir, "folder_jpg", [],
+                                          ["written from the chosen cover"],
+                                          "online")
+                            _record_folder_image(con, adir)
+                        except Exception as e:
+                            errors.append((adir, "folder.jpg: %s" % e))
                 affected_albums.add(adir)
 
     db.finish_batch(con, batch_id, n_files)
@@ -238,6 +251,25 @@ def _write_folder_jpg_bytes(adir, data, overwrite):
         return False
     target.write_bytes(bytes(data))
     return True
+
+
+def _record_folder_image(con, adir):
+    """Refresh the album's recorded folder image (folder_jpg flag, cover_path,
+    dimensions) after writing folder.jpg, so the rule re-evaluation at the end
+    of the apply compares against the NEW file instead of the scan-time state
+    (which otherwise kept a 'folder image is smaller' issue alive until the
+    next rescan). folder.jpg is the scanner's top cover-name priority, so this
+    matches what a rescan would record."""
+    from PIL import Image
+    target = Path(adir) / "folder.jpg"
+    w = h = None
+    try:
+        with Image.open(target) as im:
+            w, h = im.size
+    except Exception:
+        pass
+    con.execute("UPDATE albums SET folder_jpg=1, cover_path=?, cover_w=?,"
+                " cover_h=? WHERE album_dir=?", (str(target), w, h, adir))
 
 
 def _export_folder_jpg(con, settings, adir, overwrite=None):
