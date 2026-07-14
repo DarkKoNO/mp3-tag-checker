@@ -1,6 +1,14 @@
 {
-  "version": "1.7.1",
+  "version": "1.7.2",
   "changelog": [
+    {
+      "version": "1.7.2",
+      "date": "2026-07-14",
+      "changes": [
+        "The 'Re-encode text as UTF-8' check no longer fires forever on files edited in Mp3tag. ID3v2.4 stores the text encoding separately in every single frame, so one tag legitimately mixes them — and Mp3tag writes the purely numeric frames (track, disc, year) and the picture description as latin-1 even when it is set to write UTF-8, because for digits latin-1 and UTF-8 are the very same bytes. The app treated any such frame as damage, 'fixed' it, and the next Mp3tag edit brought it straight back: an endless ping-pong over something that changes no text at all. These frames are now exempt, while every real text frame (title, artist, album, comment, custom tags …) is still required to be UTF-8 — with or without accented characters. A numeric frame that does hold non-ASCII text after all (a genuinely damaged tag) is still reported.",
+        "Do a full re-read (Rescan on an album/artist, or 'Re-read all files') to clear this warning from files that were already scanned — the encoding is recorded when a file is read, so a quick scan, which only re-reads files whose size or date changed, will keep reporting the old result on untouched files."
+      ]
+    },
     {
       "version": "1.7.1",
       "date": "2026-07-14",

@@ -165,7 +165,11 @@ RULE_DESCRIPTIONS = {
         " (latin-1, utf-16, ...). The ID3v2.4 standard is UTF-8, which every"
         " modern player reads and which can represent all characters of all"
         " languages. Applying re-saves the same values encoded as UTF-8 - the"
-        " visible text does not change.",
+        " visible text does not change."
+        " Purely numeric frames (track, disc, year) and picture descriptions are"
+        " not reported: the standard lets every frame carry its own encoding,"
+        " and for digits latin-1 and UTF-8 are the same bytes, so other taggers"
+        " (Mp3tag) write them as latin-1 on purpose.",
     "artist_superset":
         "With the 'subset' album-artist rule (see Settings - Writing), every"
         " track's ARTIST must contain the album artist: the artist field may"

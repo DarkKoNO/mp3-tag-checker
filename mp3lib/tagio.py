@@ -209,6 +209,28 @@ FIELD_TO_APEV2 = {
 
 ENC_NAMES = {0: "latin-1", 1: "utf-16", 2: "utf-16be", 3: "utf-8"}
 
+# ID3v2.4 stores the text encoding per frame, so a tag legitimately mixes them.
+# In these frames the encoding byte carries no meaning: the spec restricts their
+# content to digits and separators (TRCK, TDRC, ...), or the byte only describes
+# a description string we never use (APIC, GEOB). Taggers exploit that - Mp3tag
+# writes exactly these as latin-1 even when configured for UTF-8 - and since
+# ASCII is byte-identical in latin-1 and UTF-8, nothing is at risk. Flagging them
+# would start an endless fix/re-edit ping-pong, so they are exempt as long as
+# their content really is ASCII.
+ENC_EXEMPT_FRAMES = {
+    "TRCK", "TPOS", "TLEN", "TBPM", "TSIZ", "TCMP",
+    "TYER", "TDAT", "TIME", "TDRC", "TDRL", "TDEN", "TDOR", "TDTG",
+    "APIC", "GEOB",
+}
+
+
+def _frame_is_ascii(fr):
+    """True when nothing in the frame needs more than ASCII, i.e. its encoding
+    byte cannot affect the bytes on disk."""
+    parts = [str(x) for x in getattr(fr, "text", [])]
+    parts.append(str(getattr(fr, "desc", "")))
+    return all(ord(c) < 128 for p in parts for c in p)
+
 
 def has_id3v1(path):
     with open(path, "rb") as f:
@@ -445,8 +467,12 @@ def read_tags(path):
             covers.append(e)
         for fr in tags.values():
             enc = getattr(fr, "encoding", None)
-            if enc is not None:
-                encs[ENC_NAMES.get(int(enc), "?")] += 1
+            if enc is None:
+                continue
+            if (int(enc) != 3 and fr.FrameID in ENC_EXEMPT_FRAMES
+                    and _frame_is_ascii(fr)):
+                continue
+            encs[ENC_NAMES.get(int(enc), "?")] += 1
     t["_cover"] = covers
     t["_enc"] = dict(encs)
     return t
