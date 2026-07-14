@@ -179,6 +179,11 @@ Highlights:
 - **Covers** — minimum acceptable embedded cover size, whether to write
   `folder.jpg` next to the files, and the optional **Discogs token** that
   adds Discogs to the online cover search.
+- **Confirmations** — the success popups (Applied, Reverted, cover /
+  artist.jpg saved, …) can be turned off, either in **Settings → General**
+  or with the *Don't show these confirmations again* checkbox inside any of
+  them; a short status-bar note appears instead. Warnings and errors always
+  show.
 - **Themes** — Light and Dark are built in; you can create your own themes
   (colors and fonts) in the theme editor.
 - **Field labels** — the names shown for tag fields; a Czech set ships with

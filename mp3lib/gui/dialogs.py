@@ -17,7 +17,7 @@ from .. import applier, db, online
 from ..settings import (BASE_DIR, DEFAULT_SETTINGS, make_db_filename,
                         read_folders_txt, save_config)
 from .common import (STATUS_COLORS, enable_copy, field_label, join_vals,
-                     persist_header)
+                     persist_header, success_box)
 
 # pseudo "fields" appearing in the changelog / proposals
 PSEUDO_FIELD_LABELS = {"_id3v1": "old ID3v1 tag", "_version": "ID3 version",
@@ -472,9 +472,9 @@ class HistoryDialog(QDialog):
             QMessageBox.warning(self, "Revert finished with errors",
                                 "\n".join("%s: %s" % e for e in res["errors"][:10]))
         else:
-            QMessageBox.information(self, "Reverted",
-                                    "%d files rewritten (%d field changes)."
-                                    % (res["files"], res["changes"]))
+            success_box(self, self.settings, "Reverted",
+                        "%d files rewritten (%d field changes)."
+                        % (res["files"], res["changes"]))
         self.reverted = True
         self.accept()
 
@@ -502,30 +502,44 @@ class SettingsPane(QWidget):
             self.w[key] = c
             form.addRow(c)
 
-        # --- Appearance tab (themes: every color + font, user-editable)
-        self._build_appearance_tab(tabs, s)
-
-        # --- Field names tab (display aliases for the metadata fields)
-        self._build_field_names_tab(tabs, s)
-
-        # --- Writing tab (general write behavior; rule-specific options live
+        # --- General tab, first (general behavior; rule-specific options live
         # in the Options column of the Problem types tab)
         wtab = QWidget()
         form = QFormLayout(wtab)
         chk(form, "preserve_file_times", "Keep file 'date modified' when changing tags")
+        chk(form, "success_popups",
+            "Show a confirmation window after successful actions (apply,"
+            " revert, cover, artist.jpg) — warnings and errors always appear")
         self.w["va_name"] = QLineEdit(s["va_name"])
         form.addRow("Album artist for compilations:", self.w["va_name"])
         sp = QSpinBox()
         sp.setRange(2, 100)
         sp.setValue(int(s["history_keep"]))
         self.w["history_keep"] = sp
-        form.addRow("Tag versions kept per file:", sp)
+        hist_tip = (
+            "This is the History feature (album view → History…).\n"
+            "Before every write the app records a snapshot of ALL the file's"
+            " tags, so you can inspect old versions and revert to any of them"
+            " — including a removed ID3v1/APEv2 tag or a replaced cover.\n"
+            "This number is how many versions are remembered per file; beyond"
+            " it, the oldest are deleted. More versions = a further-reaching"
+            " undo, but a larger library database.")
+        hist_lbl = QLabel("Tag versions kept per file:")
+        hist_lbl.setToolTip(hist_tip)
+        sp.setToolTip(hist_tip)
+        form.addRow(hist_lbl, sp)
         form.addRow(QLabel(
             "<i>Rule-specific options — ID3v1 removal, UTF-8 re-encoding,"
             " track number format, the album artist rule and artist ↔ album"
             " artist copying — are set per rule in the <b>Problem types</b>"
             " tab (Options column).</i>"))
-        tabs.addTab(wtab, "Writing")
+        tabs.addTab(wtab, "General")
+
+        # --- Appearance tab (themes: every color + font, user-editable)
+        self._build_appearance_tab(tabs, s)
+
+        # --- Field names tab (display aliases for the metadata fields)
+        self._build_field_names_tab(tabs, s)
 
         # --- Checks tab (required fields, covers, genre)
         ctab = QWidget()
@@ -711,7 +725,7 @@ class SettingsPane(QWidget):
             " ARTIST contains it (artist = album artist + optionally more,"
             " e.g. guests).\n"
             "common — the artists that appear on every track become the album"
-            " artist; with no common artist the compilation name (Writing"
+            " artist; with no common artist the compilation name (General"
             " tab) is used.\n"
             "keep — never touch the album artist.")
         self.rule_opts["id3v1"] = _opt_combo(
@@ -2398,13 +2412,13 @@ class CoverSearchDialog(QDialog):
                     self, "Cover applied with errors",
                     "\n".join("%s: %s" % e for e in res["errors"][:10]))
             else:
-                QMessageBox.information(
-                    self, "Cover applied",
+                success_box(
+                    self, self.settings, "Cover applied",
                     "The cover was embedded into %d file(s). The album's other"
                     " pending changes were not touched." % res["files"])
         else:
-            QMessageBox.information(
-                self, "Cover proposed",
+            success_box(
+                self, self.settings, "Cover proposed",
                 "The cover was stored as a proposal. It will be embedded into"
                 " all tracks of the album when you apply.")
         self.accept()
@@ -2546,7 +2560,8 @@ class ArtistImageDialog(QDialog):
                          (self.artist_folder,))
         self.con.commit()
         self.saved = True
-        QMessageBox.information(self, "Saved", "artist.jpg written to %s" % target)
+        success_box(self, self.settings, "Saved",
+                    "artist.jpg written to %s" % target)
         self.accept()
 
 

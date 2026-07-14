@@ -171,7 +171,7 @@ RULE_DESCRIPTIONS = {
         " and for digits latin-1 and UTF-8 are the same bytes, so other taggers"
         " (Mp3tag) write them as latin-1 on purpose.",
     "artist_superset":
-        "With the 'subset' album-artist rule (see Settings - Writing), every"
+        "With the 'subset' album-artist rule (see Settings - General), every"
         " track's ARTIST must contain the album artist: the artist field may"
         " hold more names (e.g. guests) but never fewer. This track's artist"
         " is missing the album artist; the proposal adds it to the artist"

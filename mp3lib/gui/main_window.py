@@ -19,7 +19,7 @@ from ..rules import (IMAGE_RULES, RULE_SEVERITY, is_non_fixable,
 from ..settings import active_library, lib_db_path, save_config
 from ..updater import local_version
 from .common import (SEV_RANK, Worker, dot_icon, enable_copy, field_label,
-                     persist_header, persist_splitter, worse)
+                     persist_header, persist_splitter, success_box, worse)
 from .detail_panel import DetailPanel
 from .dialogs import (ChangelogPane, LibrariesDialog, ScanDialog,
                       ScanReportDialog, SearchPane, SettingsPane,
@@ -1089,9 +1089,13 @@ class MainWindow(QMainWindow):
         msg = ("Matched %d album(s), created %d internet proposal(s)."
                % (res["matched"], res["proposals"]))
         if res["misses"]:
+            # unmatched albums are worth a look — always show these
             msg += "\n\nNot matched / errors (%d):\n  " % len(res["misses"]) \
                    + "\n  ".join(res["misses"][:12])
-        QMessageBox.information(self, "Internet check finished", msg)
+            QMessageBox.information(self, "Internet check finished", msg)
+        else:
+            success_box(self, self.cfg["settings"],
+                        "Internet check finished", msg)
         self.refresh_tree()
         self.detail.refresh()
 
@@ -1164,8 +1168,8 @@ class MainWindow(QMainWindow):
                 % (res["files"], res["changes"],
                    "\n  ".join("%s: %s" % e for e in res["errors"][:10])))
         else:
-            QMessageBox.information(
-                self, "Applied",
+            success_box(
+                self, self.cfg["settings"], "Applied",
                 "%d files written, %d field changes.\nEverything is in the change log."
                 % (res["files"], res["changes"]))
         self.refresh_tree()

@@ -1,6 +1,15 @@
 {
-  "version": "1.8.0",
+  "version": "1.9.0",
   "changelog": [
+    {
+      "version": "1.9.0",
+      "date": "2026-07-14",
+      "changes": [
+        "Success confirmations can be turned off. The 'everything went fine' popups — Applied, Reverted, Cover proposed/applied, artist.jpg saved, Internet check finished — now carry a 'Don't show these confirmations again' checkbox, and there is a matching switch in Settings → General. When turned off, a successful action just posts a short note to the status bar instead of a popup you have to click away. Warnings and errors are never suppressed — anything that goes wrong is still shown, including an internet check with unmatched albums.",
+        "The Settings 'Writing' tab is renamed to 'General' and moved to the front — it holds general behavior (file times, confirmations, compilations name, history depth), not just writing options.",
+        "'Tag versions kept per file' now explains itself on hover: it is the History feature's depth — before every write the app snapshots all of the file's tags so History can show and revert to them; this number says how many versions are remembered per file before the oldest are deleted."
+      ]
+    },
     {
       "version": "1.8.0",
       "date": "2026-07-14",

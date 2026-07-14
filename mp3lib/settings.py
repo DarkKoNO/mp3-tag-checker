@@ -307,6 +307,9 @@ DEFAULT_SETTINGS = {
     "genre_policy": "fill_missing",  # 'preserve' = never touch; 'fill_missing' = propose for empty
     # history
     "history_keep": 10,           # tag versions kept per track
+    # confirmation popup after successful actions (apply, revert, cover, …);
+    # warnings and errors always show regardless of this switch
+    "success_popups": True,
     # display
     "multi_sep": "; ",            # how multi-value fields are shown/edited in the GUI
     # auto-update (Settings - Updates)

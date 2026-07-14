@@ -30,6 +30,36 @@ FIELD_UI = {"origartist": "original artist", "origdate": "original date",
             "bpm": "BPM", "isrc": "ISRC"}
 
 
+def success_box(parent, settings, title, text):
+    """A success confirmation (OK + a 'don't show again' checkbox). When the
+    user opted out — via the checkbox or Settings — the popup is skipped and
+    the message goes to the main window's status bar instead. Warnings and
+    errors are never routed through here; they always show."""
+    from PySide6.QtWidgets import (QApplication, QCheckBox, QMainWindow,
+                                   QMessageBox)
+    if not settings.get("success_popups", True):
+        for w in QApplication.topLevelWidgets():
+            if isinstance(w, QMainWindow):
+                w.statusBar().showMessage(
+                    "%s — %s" % (title, " ".join(text.split())), 8000)
+                break
+        return
+    box = QMessageBox(QMessageBox.Information, title, text,
+                      QMessageBox.Ok, parent)
+    cb = QCheckBox("Don't show these confirmations again"
+                   " (warnings and errors still appear)")
+    box.setCheckBox(cb)
+    box.exec()
+    if cb.isChecked():
+        settings["success_popups"] = False
+        from ..settings import save_config
+        # settings IS the main window's cfg['settings'] — persist right away
+        for w in QApplication.topLevelWidgets():
+            if getattr(w, "cfg", None) and w.cfg.get("settings") is settings:
+                save_config(w.cfg)
+                break
+
+
 def field_label(field):
     """How a metadata field is displayed everywhere in the GUI."""
     if not field:
