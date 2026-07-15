@@ -310,6 +310,10 @@ DEFAULT_SETTINGS = {
     # confirmation popup after successful actions (apply, revert, cover, …);
     # warnings and errors always show regardless of this switch
     "success_popups": True,
+    # 'Open folder' buttons: 'explorer' or 'totalcmd' (opens the folder as a
+    # new tab in the running Total Commander via /O /T /L=)
+    "folder_open_mode": "explorer",
+    "totalcmd_path": "",          # totalcmd exe; empty = auto-detect
     # display
     "multi_sep": "; ",            # how multi-value fields are shown/edited in the GUI
     # auto-update (Settings - Updates)

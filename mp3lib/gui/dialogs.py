@@ -528,6 +528,46 @@ class SettingsPane(QWidget):
         hist_lbl.setToolTip(hist_tip)
         sp.setToolTip(hist_tip)
         form.addRow(hist_lbl, sp)
+        # 'Open folder' buttons: Explorer, or a tab in Total Commander
+        from .common import detect_totalcmd
+        self.opener_combo = QComboBox()
+        self.opener_combo.addItem("Windows Explorer", "explorer")
+        self.opener_combo.addItem("Total Commander (new tab)", "totalcmd")
+        idx = self.opener_combo.findData(s.get("folder_open_mode", "explorer"))
+        self.opener_combo.setCurrentIndex(max(idx, 0))
+        self.opener_combo.setToolTip(
+            "Total Commander opens the folder as a new tab in the already"
+            " running window (starts it when it is not running)")
+        form.addRow("Open album folders with:", self.opener_combo)
+        tc_row = QHBoxLayout()
+        self.w["totalcmd_path"] = QLineEdit(s.get("totalcmd_path", ""))
+        self.w["totalcmd_path"].setPlaceholderText(
+            detect_totalcmd() or "TOTALCMD64.EXE not found — click Browse…")
+        self.w["totalcmd_path"].setToolTip(
+            "Path to TOTALCMD64.EXE / TOTALCMD.EXE; leave empty to use the"
+            " auto-detected installation")
+        tc_row.addWidget(self.w["totalcmd_path"])
+        tc_browse = QPushButton("Browse…")
+
+        def _pick_tc():
+            fp, _ = QFileDialog.getOpenFileName(
+                self, "Locate the Total Commander program",
+                self.w["totalcmd_path"].text().strip() or "C:\\",
+                "Total Commander (totalcmd*.exe TOTALCMD*.EXE);;"
+                "Programs (*.exe)")
+            if fp:
+                self.w["totalcmd_path"].setText(fp)
+        tc_browse.clicked.connect(_pick_tc)
+        tc_row.addWidget(tc_browse)
+        tc_lbl = QLabel("Total Commander program:")
+        form.addRow(tc_lbl, tc_row)
+
+        def _tc_row_enabled():
+            on = self.opener_combo.currentData() == "totalcmd"
+            for w in (tc_lbl, self.w["totalcmd_path"], tc_browse):
+                w.setEnabled(on)
+        self.opener_combo.currentIndexChanged.connect(_tc_row_enabled)
+        _tc_row_enabled()
         form.addRow(QLabel(
             "<i>Rule-specific options — ID3v1 removal, UTF-8 re-encoding,"
             " track number format, the album artist rule and artist ↔ album"
@@ -799,9 +839,10 @@ class SettingsPane(QWidget):
         self.reeval = QCheckBox("Re-evaluate all rules after saving")
         self.reeval.setChecked(True)
         bottom.addWidget(self.reeval)
-        reset_btn = QPushButton("Reset column widths && window ratios")
-        reset_btn.setToolTip("Forget all remembered table column widths and"
-                             " splitter positions everywhere")
+        reset_btn = QPushButton("Reset column widths, window sizes && ratios")
+        reset_btn.setToolTip("Forget all remembered table column widths,"
+                             " splitter positions and dialog window sizes"
+                             " (e.g. the cover search window) everywhere")
         reset_btn.clicked.connect(self._reset_layout)
         bottom.addWidget(reset_btn)
         bottom.addStretch(1)
@@ -1280,8 +1321,9 @@ class SettingsPane(QWidget):
         save_config(self.cfg)
         QMessageBox.information(
             self, "Layout reset",
-            "All remembered column widths and window ratios were cleared.\n"
-            "Views return to their defaults when you open them again.")
+            "All remembered column widths, window ratios and dialog window\n"
+            "sizes were cleared. Views and windows return to their defaults\n"
+            "when you open them again.")
 
     def _add_pattern_row(self, field, regex, allowed):
         r = self.pat_table.rowCount()
@@ -1331,6 +1373,7 @@ class SettingsPane(QWidget):
         s["utf8_all_frames"] = self.rule_opts["encoding"].currentData()
         s["sync_artist_albumartist"] = self.rule_opts["artist_sync"].currentData()
         s["theme"] = self.theme_combo.currentData() or "auto"
+        s["folder_open_mode"] = self.opener_combo.currentData() or "explorer"
         import copy as _copy
         s["field_label_set"] = self.flabel_combo.currentData() or "English"
         s["field_label_sets"] = _copy.deepcopy(self._flabel_user)
@@ -2148,7 +2191,7 @@ class CoverSearchDialog(QDialog):
         self.con, self.settings, self.album_dir = con, settings, album_dir
         self.chosen = False
         self.setWindowTitle("Change cover — %s / %s" % (artist_name, album_name))
-        self.resize(860, 540)
+        self.resize(1120, 560)
         lay = QVBoxLayout(self)
 
         row = QHBoxLayout()
@@ -2168,7 +2211,7 @@ class CoverSearchDialog(QDialog):
         mid = QHBoxLayout()
         self.results = QListWidget()
         self.results.currentRowChanged.connect(self._preview)
-        mid.addWidget(self.results, 1)
+        mid.addWidget(self.results, 3)   # wide: rows end with '… — 1200×1200 px'
         right = QVBoxLayout()
         self.preview = QLabel("Select a release to preview its cover,\n"
                               "or drag an image file here,\n"

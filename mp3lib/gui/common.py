@@ -201,6 +201,70 @@ def persist_splitter(cfg, key, splitter):
     splitter.splitterMoved.connect(on_move)
 
 
+def detect_totalcmd():
+    """Full path of the Total Commander exe, or '' when not installed.
+    Checks the registry (InstallDir) first, then the usual folders."""
+    from pathlib import Path
+    dirs = []
+    try:
+        import winreg
+        for hive in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
+            try:
+                with winreg.OpenKey(hive,
+                                    r"Software\Ghisler\Total Commander") as k:
+                    dirs.append(winreg.QueryValueEx(k, "InstallDir")[0])
+            except OSError:
+                pass
+    except ImportError:
+        pass
+    dirs += [r"C:\totalcmd", r"C:\Program Files\totalcmd",
+             r"C:\Program Files (x86)\totalcmd"]
+    for d in dirs:
+        for exe in ("TOTALCMD64.EXE", "TOTALCMD.EXE"):
+            p = Path(d) / exe
+            if p.is_file():
+                return str(p)
+    return ""
+
+
+def open_folder(settings, path):
+    """Open a folder per Settings → General: Windows Explorer, or a new tab
+    in the (already running) Total Commander."""
+    import os
+    import subprocess
+    if settings.get("folder_open_mode") == "totalcmd":
+        exe = (settings.get("totalcmd_path") or "").strip()
+        if not exe or not os.path.isfile(exe):
+            exe = detect_totalcmd()
+        if exe:
+            # TC parses its own command line; /L= must carry the quotes, so
+            # build the string ourselves instead of letting list2cmdline do it
+            subprocess.Popen('"%s" /O /T /L="%s"' % (exe, path))
+            return
+    os.startfile(path)
+
+
+def persist_dialog_size(cfg, key, dialog):
+    """Restore a dialog's saved window size and remember future resizes.
+    Call after the dialog set its default size, before exec()."""
+    from PySide6.QtCore import QEvent, QObject
+
+    lay = cfg["settings"].setdefault("ui_layout", {})
+    size = lay.get(key)
+    if isinstance(size, list) and len(size) == 2 \
+            and all(isinstance(v, int) and v > 100 for v in size):
+        dialog.resize(size[0], size[1])
+
+    class _SizeWatcher(QObject):
+        def eventFilter(self, obj, ev):
+            if ev.type() == QEvent.Resize and obj.isVisible():
+                lay[key] = [obj.width(), obj.height()]
+                _debounced_save(cfg)
+            return False
+
+    dialog.installEventFilter(_SizeWatcher(dialog))
+
+
 def enable_copy(view):
     """Ctrl+C copies the selected cells/rows of a table or tree as text."""
     from PySide6.QtGui import QKeySequence, QShortcut

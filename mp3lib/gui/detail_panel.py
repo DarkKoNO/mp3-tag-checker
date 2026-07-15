@@ -22,8 +22,9 @@ from ..rules import (IMAGE_RULES, RULE_SEVERITY, missing_field_of,
                      rule_description, rule_label)
 from .common import (SEV_COLORS, SEV_RANK, STATUS_COLORS, add_hover_copy,
                      copy_button, enable_copy, field_label, flat, join_vals,
-                     persist_header, persist_splitter, sel_label, split_vals,
-                     unflat, value_item)
+                     open_folder, persist_dialog_size, persist_header,
+                     persist_splitter, sel_label, split_vals, unflat,
+                     value_item)
 from .dialogs import (ArtistImageDialog, CoverSearchDialog, ExceptionsDialog,
                       HistoryDialog, ImageViewerDialog)
 
@@ -674,6 +675,7 @@ class DetailPanel(QWidget):
         display = names.most_common(1)[0][0] if names else artist
         dlg = ArtistImageDialog(self.con, self.cfg["settings"], artist, display,
                                 self.owner.lib["root"], self)
+        persist_dialog_size(self.cfg, "artist_image_dialog", dlg)
         dlg.exec()
         if dlg.saved:
             self.owner.refresh_tree()
@@ -808,7 +810,8 @@ class DetailPanel(QWidget):
             "<span style='color:gray;'>Path:</span> %s" % html.escape(adir)))
         open_btn = QPushButton("Open folder")
         open_btn.setToolTip(adir)
-        open_btn.clicked.connect(lambda: os.startfile(adir))
+        open_btn.clicked.connect(
+            lambda: open_folder(self.cfg["settings"], adir))
         path_row.addWidget(open_btn)
         path_row.addWidget(sel_label("<span style='color:gray;'>%d tracks</span>"
                                      % len(tracks)))
@@ -1479,6 +1482,7 @@ class DetailPanel(QWidget):
                 break
         dlg = CoverSearchDialog(self.con, self.cfg["settings"], artist_name,
                                 album_name, adir, self)
+        persist_dialog_size(self.cfg, "cover_search_dialog", dlg)
         dlg.exec()
         if dlg.chosen:
             self.refresh()

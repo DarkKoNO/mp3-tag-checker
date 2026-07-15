@@ -159,7 +159,10 @@ Nothing is ever contacted automatically. When you ask for it:
   tracks (+ `folder.jpg`) immediately — applying *only* the cover and
   leaving the album's other pending proposals untouched. Either way, a
   cover you picked yourself always replaces an existing `folder.jpg`,
-  regardless of the *Overwrite existing folder.jpg* setting. Artist images
+  regardless of the *Overwrite existing folder.jpg* setting. The search
+  window (and the artist-image window) remembers the size you resize it
+  to; the *Reset column widths, window sizes && ratios* button in Settings
+  returns it to the default. Artist images
   come from **Deezer** and **TheAudioDB** — again only per your explicit
   request (they are saved as `artist.jpg` right away; nothing is embedded
   into the files).
@@ -179,6 +182,11 @@ Highlights:
 - **Covers** — minimum acceptable embedded cover size, whether to write
   `folder.jpg` next to the files, and the optional **Discogs token** that
   adds Discogs to the online cover search.
+- **Open album folders with** — the album view's *Open folder* button uses
+  **Windows Explorer** by default, or opens the folder as a new tab in an
+  already running **Total Commander** (Settings → General; the Total
+  Commander program is found automatically, or point the setting to your
+  `TOTALCMD64.EXE`).
 - **Confirmations** — the success popups (Applied, Reverted, cover /
   artist.jpg saved, …) can be turned off, either in **Settings → General**
   or with the *Don't show these confirmations again* checkbox inside any of

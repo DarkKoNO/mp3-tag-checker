@@ -1,6 +1,15 @@
 {
-  "version": "1.9.0",
+  "version": "1.10.0",
   "changelog": [
+    {
+      "version": "1.10.0",
+      "date": "2026-07-15",
+      "changes": [
+        "'Open folder' can use Total Commander: a new setting (Settings → General → 'Open album folders with') switches the album view's Open-folder button between Windows Explorer and Total Commander. With Total Commander selected, the folder opens as a NEW TAB in the already running Total Commander window (or starts it when it is not running). The Total Commander program is found automatically (registry + the usual folders); if yours lives somewhere unusual, point the 'Total Commander program' field to your TOTALCMD64.EXE with Browse….",
+        "The cover search window is wider by default and gives most of the width to the result list, so the resolution shown at the end of every result ('1500×1500 px') is visible without horizontal scrolling.",
+        "The cover search and artist-image windows remember their size: resize one and it reopens exactly that big next time. The Settings button 'Reset column widths, window sizes && ratios' (previously 'Reset column widths && window ratios') also clears these remembered sizes, returning the windows to their defaults."
+      ]
+    },
     {
       "version": "1.9.0",
       "date": "2026-07-14",
