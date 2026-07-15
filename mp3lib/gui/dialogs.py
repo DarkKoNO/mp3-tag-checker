@@ -1245,8 +1245,8 @@ class SettingsPane(QWidget):
         utab = QWidget()
         ulay = QVBoxLayout(utab)
         head = QFormLayout()
-        head.addRow("Installed version:",
-                    QLabel("<b>%s</b>" % updater.local_version()))
+        self.upd_installed_lbl = QLabel("<b>%s</b>" % updater.local_version())
+        head.addRow("Installed version:", self.upd_installed_lbl)
         ulay.addLayout(head)
         c = QCheckBox("Check for updates at startup (a popup appears only"
                       " when a new version exists)")
@@ -1298,12 +1298,26 @@ class SettingsPane(QWidget):
 
     def _update_check_finished(self, result):
         self.upd_check_btn.setEnabled(True)
+        if result.get("local"):
+            # re-read on every check: version.json may have changed on disk
+            # while the app was running (e.g. an update installed meanwhile)
+            self.upd_installed_lbl.setText("<b>%s</b>" % result["local"])
         if result.get("error"):
             self.upd_status.setText("The check failed: %s" % result["error"])
             return
         if not result.get("update"):
-            self.upd_status.setText(
-                "You have the newest version (%s)." % result["local"])
+            from .. import updater
+            if result.get("local") != updater.RUNNING_VERSION:
+                # the files on disk are already newer than the code this
+                # process loaded at startup — only a restart is missing
+                self.upd_status.setText(
+                    "<b>Version %s is already installed</b>, but the app you"
+                    " are looking at is still running version %s — close the"
+                    " app and start it again to use the new version."
+                    % (result["local"], updater.RUNNING_VERSION))
+            else:
+                self.upd_status.setText(
+                    "You have the newest version (%s)." % result["local"])
             self.upd_install_btn.setVisible(False)
             return
         self._upd_info = result

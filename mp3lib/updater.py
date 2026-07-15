@@ -49,6 +49,13 @@ def local_version():
     return str(read_local().get("version", "0.0.0"))
 
 
+# version.json as of process start = the version of the CODE this process is
+# actually running. version.json on disk can move ahead of it while the app
+# stays open (an installed update, or the folder being synced/overwritten) —
+# then the only missing step is a restart, and the GUI says so.
+RUNNING_VERSION = local_version()
+
+
 def parse_version(text):
     """'1.2.3' -> (1, 2, 3). Non-numeric parts count as 0."""
     parts = []

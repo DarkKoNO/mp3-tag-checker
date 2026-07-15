@@ -785,11 +785,12 @@ class DetailPanel(QWidget):
         top_widget = QWidget()
         outer = QVBoxLayout(top_widget)
         outer.setContentsMargins(0, 0, 0, 0)
-        album_name = self.owner.album_display(adir)
-
         def _uniform(field):
             vals = {join_vals(snaps[tid].get(field, []), self.sep()) for tid in snaps}
             return vals.pop() if len(vals) == 1 else ""
+        # the ALBUM TAG, not the folder name (folder = fallback when the tag
+        # is missing or differs between tracks; the path row shows the folder)
+        album_name = _uniform("album") or self.owner.album_display(adir)
         aartist = _uniform("albumartist") or artist
         year = _uniform("year")
 

@@ -1,6 +1,15 @@
 {
-  "version": "1.10.0",
+  "version": "1.10.1",
   "changelog": [
+    {
+      "version": "1.10.1",
+      "date": "2026-07-15",
+      "changes": [
+        "The album view's header now shows the ALBUM TAG from the metadata ('Album artist — Album (Year)'), not the folder name. The folder name is only used as a fallback when the album tag is missing or differs between the tracks — the full folder path is on the line below anyway. The copy button next to the header copies the shown album name.",
+        "Settings → Updates: the 'Installed version' number is refreshed on every check — it used to show the version from when the app was started, which could confusingly disagree with the check result below it.",
+        "Settings → Updates: when the app's files on disk are already newer than the running app (an update was installed but the app was not restarted, or the files were replaced while it ran), the check now says exactly that — 'close the app and start it again to use the new version' — instead of the misleading 'You have the newest version'."
+      ]
+    },
     {
       "version": "1.10.0",
       "date": "2026-07-15",
